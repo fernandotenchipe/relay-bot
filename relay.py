@@ -32,7 +32,15 @@ if not OPENAI_KEY:
 
 print("=== INICIANDO SCRIPT ===")
 
-client = TelegramClient('session', API_ID, API_HASH)
+# 🔥 CLIENT CONFIG ESTABLE
+client = TelegramClient(
+    'session',
+    API_ID,
+    API_HASH,
+    connection_retries=None,
+    retry_delay=2,
+    auto_reconnect=True
+)
 
 
 # 🔹 Traducción
@@ -63,7 +71,7 @@ async def translate_text(text: str) -> str:
         return text
 
 
-# 🔹 Handler (tiempo real)
+# 🔹 Handler realtime
 @client.on(events.NewMessage())
 async def handler(event):
     try:
@@ -88,11 +96,15 @@ async def handler(event):
         log.error(f"Error reenviando: {e}")
 
 
-# 🔹 MAIN optimizado (SIN with client)
+# 🔹 MAIN
 async def main():
     print("=== SESION INICIADA ===")
 
+    # 🔥 fuerza sync inicial
     await client.get_dialogs()
+
+    # 🔥 evita perder eventos
+    client.catch_up()
 
     log.info("=== Relay iniciado ===")
     log.info(f"Escuchando canal: {SOURCE}")
@@ -101,5 +113,6 @@ async def main():
     await client.run_until_disconnected()
 
 
+# 🔥 START CORRECTO
 client.start(phone=PHONE)
 client.loop.run_until_complete(main())
