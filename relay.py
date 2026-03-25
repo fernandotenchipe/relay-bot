@@ -26,18 +26,21 @@ print("=== INICIANDO SCRIPT ===")
 
 client = TelegramClient('session', API_ID, API_HASH)
 
-@client.on(events.NewMessage(chats=SOURCE))
+@client.on(events.NewMessage())
 async def handler(event):
     try:
-        print("🔥 EVENTO DETECTADO")
+        chat_id = event.chat_id
+
+        print(f"EVENTO DETECTADO EN: {chat_id}")
+
+        if chat_id != SOURCE:
+            return
 
         msg = event.message
         text = msg.text or msg.caption or ""
+
         ts = datetime.now().strftime("%H:%M:%S")
-
-        safe_text = text.encode('utf-8', 'ignore').decode('utf-8')
-
-        log.info(f"[{ts}] Mensaje recibido: {safe_text[:80]}...")
+        log.info(f"[{ts}] Mensaje recibido: {text[:80]}...")
 
         await client.send_message(DEST, text)
 
