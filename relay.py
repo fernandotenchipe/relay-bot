@@ -92,7 +92,6 @@ async def handler(event):
 async def main():
     print("=== SESION INICIADA ===")
 
-    # 🔥 fuerza sync inicial (evita delay de 1 min)
     await client.get_dialogs()
 
     log.info("=== Relay iniciado ===")
@@ -102,6 +101,5 @@ async def main():
     await client.run_until_disconnected()
 
 
-# 🔥 ejecución directa (más estable en servidores)
-client.loop.run_until_complete(client.start(phone=PHONE))
+client.start(phone=PHONE)
 client.loop.run_until_complete(main())
