@@ -25,6 +25,7 @@ client = TelegramClient('session', API_ID, API_HASH)
 @client.on(events.NewMessage(chats=SOURCE))
 async def handler(event):
     try:
+        print("EVENTO DETECTADO")
         msg = event.message
         text = msg.text or msg.caption or ""
         ts = datetime.now().strftime("%H:%M:%S")
