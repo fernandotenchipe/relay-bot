@@ -104,7 +104,7 @@ async def main():
     await client.get_dialogs()
 
     # 🔥 evita perder eventos
-    client.catch_up()
+    await client.catch_up()
 
     log.info("=== Relay iniciado ===")
     log.info(f"Escuchando canal: {SOURCE}")
