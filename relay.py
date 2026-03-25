@@ -50,7 +50,7 @@ async def translate_text(text: str) -> str:
 
     try:
         response = client_ai.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-3.5-turbo",
             messages=[
                 {
                     "role": "system",
@@ -61,7 +61,9 @@ async def translate_text(text: str) -> str:
                 },
                 {"role": "user", "content": text}
             ],
-            temperature=0.2
+            temperature=0.2,
+            max_tokens=400,
+            timeout=8
         )
 
         return response.choices[0].message.content.strip()
@@ -72,14 +74,9 @@ async def translate_text(text: str) -> str:
 
 
 # 🔹 Handler realtime
-@client.on(events.NewMessage())
+@client.on(events.NewMessage(chats=SOURCE))
 async def handler(event):
     try:
-        chat_id = event.chat_id
-
-        if chat_id != SOURCE:
-            return
-
         msg = event.message
         text = msg.text or msg.caption or ""
 
@@ -100,11 +97,8 @@ async def handler(event):
 async def main():
     print("=== SESION INICIADA ===")
 
-    # 🔥 fuerza sync inicial
+    # Carga dialogs pero NO sincroniza backlog
     await client.get_dialogs()
-
-    # 🔥 evita perder eventos
-    await client.catch_up()
 
     log.info("=== Relay iniciado ===")
     log.info(f"Escuchando canal: {SOURCE}")
