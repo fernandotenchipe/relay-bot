@@ -24,7 +24,7 @@ SOURCE = int(os.getenv('SOURCE_CHANNEL'))
 DEST = int(os.getenv('DEST_CHANNEL'))
 OPENAI_KEY = os.getenv('OPENAI_API_KEY')
 
-# Cliente OpenAI nuevo
+# OpenAI client
 client_ai = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 
 if not OPENAI_KEY:
@@ -35,6 +35,7 @@ print("=== INICIANDO SCRIPT ===")
 client = TelegramClient('session', API_ID, API_HASH)
 
 
+# 🔹 Traducción
 async def translate_text(text: str) -> str:
     if not client_ai:
         return text
@@ -62,12 +63,11 @@ async def translate_text(text: str) -> str:
         return text
 
 
+# 🔹 Handler (tiempo real)
 @client.on(events.NewMessage())
 async def handler(event):
     try:
         chat_id = event.chat_id
-
-        log.info(f"Evento detectado en: {chat_id}")
 
         if chat_id != SOURCE:
             return
@@ -76,24 +76,24 @@ async def handler(event):
         text = msg.text or msg.caption or ""
 
         ts = datetime.now().strftime("%H:%M:%S")
-        log.info(f"[{ts}] Mensaje recibido: {text[:80]}...")
+        log.info(f"[{ts}] Mensaje recibido")
 
         translated = await translate_text(text)
 
         await client.send_message(DEST, translated, parse_mode='md')
 
-        log.info(f"[{ts}] Reenviado OK (traducido)")
+        log.info(f"[{ts}] Reenviado OK")
 
     except Exception as e:
         log.error(f"Error reenviando: {e}")
 
 
+# 🔹 MAIN optimizado (SIN with client)
 async def main():
     print("=== SESION INICIADA ===")
 
-    print("📡 Listando canales disponibles:")
-    async for dialog in client.iter_dialogs():
-        print(f"👉 {dialog.name} | ID: {dialog.id}")
+    # 🔥 fuerza sync inicial (evita delay de 1 min)
+    await client.get_dialogs()
 
     log.info("=== Relay iniciado ===")
     log.info(f"Escuchando canal: {SOURCE}")
@@ -102,5 +102,6 @@ async def main():
     await client.run_until_disconnected()
 
 
-with client:
-    client.loop.run_until_complete(main())
+# 🔥 ejecución directa (más estable en servidores)
+client.loop.run_until_complete(client.start(phone=PHONE))
+client.loop.run_until_complete(main())
