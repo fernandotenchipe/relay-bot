@@ -31,28 +31,14 @@ if not OPENAI_KEY:
 
 print("=== INICIANDO SCRIPT ===")
 
-# 🔥 CLIENT CONFIG MÁS ESTABLE
 client = TelegramClient(
     'session',
     API_ID,
     API_HASH,
     connection_retries=None,
     retry_delay=2,
-    auto_reconnect=True,
-    request_retries=5,
-    flood_sleep_threshold=60
+    auto_reconnect=True
 )
-
-
-# 🔹 KEEP ALIVE (CLAVE)
-async def keep_alive():
-    while True:
-        try:
-            await client.get_me()
-            log.info("ping")
-        except Exception as e:
-            log.warning(f"keepalive error: {e}")
-        await asyncio.sleep(25)
 
 
 # 🔹 Traducción NO bloqueante
@@ -66,7 +52,10 @@ async def translate_text(text: str) -> str:
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Traduce al español manteniendo emojis y formato Markdown."},
+                {
+                    "role": "system",
+                    "content": "Traduce al español manteniendo emojis y formato Markdown."
+                },
                 {"role": "user", "content": text}
             ],
             temperature=0.2,
@@ -74,11 +63,25 @@ async def translate_text(text: str) -> str:
         )
 
     try:
-        response = await loop.run_in_executor(None, call_openai)
+        response = await asyncio.wait_for(
+            loop.run_in_executor(None, call_openai),
+            timeout=6
+        )
         return response.choices[0].message.content.strip()
+    except asyncio.TimeoutError:
+        log.warning("OpenAI timeout > 6s, se mantiene texto original")
+        return text
     except Exception as e:
         log.error(f"OpenAI error: {e}")
         return text
+
+async def keep_alive():
+    while True:
+        try:
+            await client.get_me()
+        except:
+            pass
+        await asyncio.sleep(60)
 
 
 # 🔹 Handler ultra rápido
@@ -86,12 +89,7 @@ async def translate_text(text: str) -> str:
 async def handler(event):
     try:
         msg = event.message
-
-        # 🔥 FIX caption error
         text = getattr(msg, "text", None) or getattr(msg, "message", None) or ""
-
-        if not text:
-            return
 
         ts = datetime.now().strftime("%H:%M:%S")
         log.info(f"[{ts}] Mensaje recibido")
@@ -106,7 +104,11 @@ async def handler(event):
                 try:
                     await sent.edit(translated, parse_mode='md')
                 except Exception as e:
-                    log.error(f"Error editando mensaje: {e}")
+                    log.warning(f"Error editando con markdown, reintentando sin formato: {e}")
+                    try:
+                        await sent.edit(translated)
+                    except Exception as e2:
+                        log.error(f"Error editando mensaje: {e2}")
 
         asyncio.create_task(process_translation())
 
@@ -122,9 +124,6 @@ async def main():
 
     await client.get_dialogs()
 
-    # 🔥 MANTENER CONEXIÓN VIVA
-    asyncio.create_task(keep_alive())
-
     log.info("=== Relay iniciado ===")
     log.info(f"Escuchando canal: {SOURCE}")
     log.info(f"Destino: {DEST}")
@@ -134,4 +133,5 @@ async def main():
 
 # 🔥 START
 client.start(phone=PHONE)
+asyncio.create_task(keep_alive())
 client.loop.run_until_complete(main())
