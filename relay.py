@@ -37,11 +37,15 @@ client = TelegramClient(
     API_HASH,
     connection_retries=None,
     retry_delay=2,
-    auto_reconnect=True
+    auto_reconnect=True,
+    request_retries=3
 )
 
+# 🔥 COLA GLOBAL (ORDEN)
+queue = asyncio.Queue()
 
-# 🔹 Traducción NO bloqueante
+
+# 🔹 Traducción mejorada (textos largos)
 async def translate_text(text: str) -> str:
     if not client_ai:
         return text
@@ -56,25 +60,44 @@ async def translate_text(text: str) -> str:
                     "role": "system",
                     "content": "Traduce al español manteniendo emojis y formato Markdown."
                 },
-                {"role": "user", "content": text}
+                {"role": "user", "content": text[:4000]}  # límite seguro
             ],
             temperature=0.2,
-            max_tokens=300
+            max_tokens=1000
         )
 
     try:
         response = await asyncio.wait_for(
             loop.run_in_executor(None, call_openai),
-            timeout=6
+            timeout=12
         )
         return response.choices[0].message.content.strip()
-    except asyncio.TimeoutError:
-        log.warning("OpenAI timeout > 6s, se mantiene texto original")
-        return text
     except Exception as e:
         log.error(f"OpenAI error: {e}")
         return text
 
+
+# 🔥 WORKER (ORDEN GARANTIZADO)
+async def worker():
+    while True:
+        sent, text = await queue.get()
+
+        try:
+            translated = await translate_text(text)
+
+            if translated != text:
+                try:
+                    await sent.edit(translated, parse_mode='md')
+                except:
+                    await sent.edit(translated)
+
+        except Exception as e:
+            log.error(f"Worker error: {e}")
+
+        queue.task_done()
+
+
+# 🔹 KEEP ALIVE (estabilidad)
 async def keep_alive():
     while True:
         try:
@@ -84,33 +107,24 @@ async def keep_alive():
         await asyncio.sleep(60)
 
 
-# 🔹 Handler ultra rápido
+# 🔹 HANDLER
 @client.on(events.NewMessage(chats=SOURCE))
 async def handler(event):
     try:
         msg = event.message
         text = getattr(msg, "text", None) or getattr(msg, "message", None) or ""
 
+        if not text:
+            return
+
         ts = datetime.now().strftime("%H:%M:%S")
         log.info(f"[{ts}] Mensaje recibido")
 
-        # 🚀 ENVÍA INMEDIATO
+        # 🚀 envío inmediato
         sent = await client.send_message(DEST, text)
 
-        # 🚀 TRADUCE EN BACKGROUND
-        async def process_translation():
-            translated = await translate_text(text)
-            if translated != text:
-                try:
-                    await sent.edit(translated, parse_mode='md')
-                except Exception as e:
-                    log.warning(f"Error editando con markdown, reintentando sin formato: {e}")
-                    try:
-                        await sent.edit(translated)
-                    except Exception as e2:
-                        log.error(f"Error editando mensaje: {e2}")
-
-        asyncio.create_task(process_translation())
+        # 🔥 encola (ORDEN)
+        await queue.put((sent, text))
 
         log.info(f"[{ts}] Reenviado inmediato")
 
@@ -124,6 +138,10 @@ async def main():
 
     await client.get_dialogs()
 
+    # 🔥 tareas en background
+    asyncio.create_task(worker())
+    asyncio.create_task(keep_alive())
+
     log.info("=== Relay iniciado ===")
     log.info(f"Escuchando canal: {SOURCE}")
     log.info(f"Destino: {DEST}")
@@ -133,5 +151,4 @@ async def main():
 
 # 🔥 START
 client.start(phone=PHONE)
-client.loop.create_task(keep_alive())
 client.loop.run_until_complete(main())
