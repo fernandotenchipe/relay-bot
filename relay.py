@@ -133,5 +133,5 @@ async def main():
 
 # 🔥 START
 client.start(phone=PHONE)
-asyncio.create_task(keep_alive())
+client.loop.create_task(keep_alive())
 client.loop.run_until_complete(main())
