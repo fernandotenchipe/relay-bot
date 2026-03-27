@@ -119,9 +119,10 @@ async def keep_alive():
     while True:
         try:
             await client.get_me()
-        except:
-            pass
-        await asyncio.sleep(60)
+            log.debug(f"Keep-alive check OK")
+        except Exception as e:
+            log.warning(f"Keep-alive error: {e}")
+        await asyncio.sleep(15)  # Reducido de 60s a 15s para detectar desconexiones más rápido
 
 
 #  HANDLER
@@ -135,7 +136,17 @@ async def handler(event):
             return
 
         ts = datetime.now().strftime("%H:%M:%S")
-        log.info(f"[{ts}] Mensaje recibido")
+        
+        # Calcular delay desde que fue enviado originalmente
+        msg_date = getattr(msg, 'date', None)
+        if msg_date:
+            try:
+                delay = (datetime.utcnow() - msg_date.replace(tzinfo=None)).total_seconds()
+                log.info(f"[{ts}] Mensaje recibido (original: {msg_date.strftime('%H:%M:%S')}, delay={delay:.0f}s)")
+            except:
+                log.info(f"[{ts}] Mensaje recibido")
+        else:
+            log.info(f"[{ts}] Mensaje recibido")
 
         #  envío inmediato
         sent = await client.send_message(DEST, text)
@@ -164,6 +175,7 @@ async def main():
     log.info("=== Relay iniciado ===")
     log.info(f"Escuchando canal: {SOURCE}")
     log.info(f"Destino: {DEST}")
+    log.info(f"Workers concurrentes: {WORKERS}")
 
     await client.run_until_disconnected()
 
