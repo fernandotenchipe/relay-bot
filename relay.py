@@ -41,11 +41,15 @@ client = TelegramClient(
     request_retries=3
 )
 
-# 🔥 COLA GLOBAL (ORDEN)
+#  COLA GLOBAL (ORDEN)
 queue = asyncio.Queue()
+# Número de workers concurrentes para procesar la cola (evita cuellos de botella)
+WORKERS = int(os.getenv('WORKERS', '3'))
+# Semáforo para limitar llamadas simultáneas a OpenAI
+SEMAPHORE = asyncio.Semaphore(WORKERS)
 
 
-# 🔹 Traducción mejorada (textos largos)
+#  Traducción mejorada (textos largos)
 async def translate_text(text: str) -> str:
     if not client_ai:
         return text
@@ -67,9 +71,10 @@ async def translate_text(text: str) -> str:
         )
 
     try:
+        # Permitir un tiempo razonable para la llamada a la API
         response = await asyncio.wait_for(
             loop.run_in_executor(None, call_openai),
-            timeout=12
+            timeout=18
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -77,27 +82,39 @@ async def translate_text(text: str) -> str:
         return text
 
 
-# 🔥 WORKER (ORDEN GARANTIZADO)
+#  WORKER (ORDEN GARANTIZADO)
 async def worker():
+    worker_id = 1
     while True:
         sent, text = await queue.get()
-
+        start = datetime.now()
         try:
-            translated = await translate_text(text)
+            log.info(f"Worker picked message; queue size={queue.qsize()}")
+
+            # Limitar concurrencia de llamadas a OpenAI
+            async with SEMAPHORE:
+                translated = await translate_text(text)
 
             if translated != text:
                 try:
                     await sent.edit(translated, parse_mode='md')
-                except:
-                    await sent.edit(translated)
+                except Exception:
+                    try:
+                        await sent.edit(translated)
+                    except Exception as e:
+                        log.error(f"Failed to edit message: {e}")
+
+            elapsed = (datetime.now() - start).total_seconds()
+            log.info(f"Worker done in {elapsed:.2f}s")
 
         except Exception as e:
             log.error(f"Worker error: {e}")
 
-        queue.task_done()
+        finally:
+            queue.task_done()
 
 
-# 🔹 KEEP ALIVE (estabilidad)
+#  KEEP ALIVE (estabilidad)
 async def keep_alive():
     while True:
         try:
@@ -107,7 +124,7 @@ async def keep_alive():
         await asyncio.sleep(60)
 
 
-# 🔹 HANDLER
+#  HANDLER
 @client.on(events.NewMessage(chats=SOURCE))
 async def handler(event):
     try:
@@ -120,26 +137,28 @@ async def handler(event):
         ts = datetime.now().strftime("%H:%M:%S")
         log.info(f"[{ts}] Mensaje recibido")
 
-        # 🚀 envío inmediato
+        #  envío inmediato
         sent = await client.send_message(DEST, text)
 
-        # 🔥 encola (ORDEN)
+        #  encola (ORDEN)
         await queue.put((sent, text))
 
-        log.info(f"[{ts}] Reenviado inmediato")
+        log.info(f"[{ts}] Reenviado inmediato (queue_size={queue.qsize()})")
 
     except Exception as e:
         log.error(f"Error reenviando: {e}")
 
 
-# 🔹 MAIN
+#  MAIN
 async def main():
     print("=== SESION INICIADA ===")
 
     await client.get_dialogs()
 
-    # 🔥 tareas en background
-    asyncio.create_task(worker())
+    #  tareas en background
+    # Lanzar varios workers para procesar la cola en paralelo
+    for i in range(WORKERS):
+        asyncio.create_task(worker())
     asyncio.create_task(keep_alive())
 
     log.info("=== Relay iniciado ===")
@@ -149,6 +168,6 @@ async def main():
     await client.run_until_disconnected()
 
 
-# 🔥 START
+#  START
 client.start(phone=PHONE)
 client.loop.run_until_complete(main())
