@@ -38,9 +38,7 @@ client = TelegramClient(
     connection_retries=None,
     retry_delay=2,
     auto_reconnect=True,
-    request_retries=3,
-    update_workers=4,  # Más workers para procesar updates rápidamente
-    flood_sleep_threshold=None,  # No esperar ante rate limits (prioridad: mensajes en tiempo real)
+    request_retries=3
 )
 
 #  COLA GLOBAL (ORDEN)
