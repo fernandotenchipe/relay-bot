@@ -38,7 +38,9 @@ client = TelegramClient(
     connection_retries=None,
     retry_delay=2,
     auto_reconnect=True,
-    request_retries=3
+    request_retries=3,
+    update_workers=4,  # Más workers para procesar updates rápidamente
+    flood_sleep_threshold=None,  # No esperar ante rate limits (prioridad: mensajes en tiempo real)
 )
 
 #  COLA GLOBAL (ORDEN)
@@ -118,11 +120,12 @@ async def worker():
 async def keep_alive():
     while True:
         try:
-            await client.get_me()
+            # get_dialogs() fuerza sincronización agresiva de updates
+            await client.get_dialogs(limit=1)
             log.debug(f"Keep-alive check OK")
         except Exception as e:
             log.warning(f"Keep-alive error: {e}")
-        await asyncio.sleep(15)  # Reducido de 60s a 15s para detectar desconexiones más rápido
+        await asyncio.sleep(5)  # Reducido a 5s para forzar polling más frecuente
 
 
 #  HANDLER
