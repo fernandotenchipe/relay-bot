@@ -118,12 +118,16 @@ async def worker():
 async def keep_alive():
     while True:
         try:
-            # get_dialogs() fuerza sincronización agresiva de updates
+            # Múltiples acciones para forzar sincronización agresiva
+            await client.get_me()
             await client.get_dialogs(limit=1)
+            # Forzar sincronización de estados
+            await asyncio.sleep(0.5)
+            await client.catch_up()
             log.debug(f"Keep-alive check OK")
         except Exception as e:
             log.warning(f"Keep-alive error: {e}")
-        await asyncio.sleep(5)  # Reducido a 5s para forzar polling más frecuente
+        await asyncio.sleep(2)  # Reducido a 2s para forzar polling MUCHO más agresivo
 
 
 #  HANDLER
