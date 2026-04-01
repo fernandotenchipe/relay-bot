@@ -82,6 +82,57 @@ async def translate_text(text: str) -> str:
         return text
 
 
+#  Identificar si es TRADE IDEA con IA
+async def is_trade_idea(text: str) -> bool:
+    if not client_ai:
+        return "TRADE IDEA" in text.upper()
+
+    loop = asyncio.get_running_loop()
+
+    def call_openai():
+        return client_ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """Eres un analizador de mensajes de trading. Tu tarea es determinar si el mensaje es una TRADE IDEA VÁLIDA y LEGÍTIMA.
+
+DESCARTA si:
+- Contiene links externos (http, https, t.me, click here, claim, unlock, etc)
+- Es promoción o spam (VIP, SPOT, LOCK, PREMIUM, JOIN, mentiones a canales/grupos)
+- Es una pregunta (ej: "Which direction? Buy or Sell?")
+- Contiene referencias a marcas externas o canales
+- Pide que hagas click o se unan a algo
+
+ACEPTA solo si:
+- Tiene instrumento claro (XAUUSD, BTC, EURUSD, etc)
+- Tiene dirección de entrada (BUY o SELL)
+- Tiene al menos 1 TP (Take Profit) o SL (Stop Loss)
+- Tiene precio de entrada
+- Es contenido educativo/información de tradeo PURO
+
+Responde SOLO con: "yes" si es trade idea legítima, o "no" si no lo es."""
+                },
+                {"role": "user", "content": text[:2000]}
+            ],
+            temperature=0,
+            max_tokens=10
+        )
+
+    try:
+        response = await asyncio.wait_for(
+            loop.run_in_executor(None, call_openai),
+            timeout=10
+        )
+        result = response.choices[0].message.content.strip().lower()
+        is_valid = "yes" in result
+        log.info(f"Trade idea check: {is_valid} - Response: {result}")
+        return is_valid
+    except Exception as e:
+        log.error(f"OpenAI trade check error: {e}")
+        return "TRADE IDEA" in text.upper()  # fallback a búsqueda de texto
+
+
 #  WORKER (ORDEN GARANTIZADO)
 async def worker():
     worker_id = 1
@@ -141,6 +192,11 @@ async def handler(event):
             return
 
         ts = datetime.now().strftime("%H:%M:%S")
+        
+        # Verificar si es TRADE IDEA con IA
+        if not await is_trade_idea(text):
+            log.info(f"[{ts}] Mensaje descartado (no es trade idea)")
+            return
         
         # Calcular delay desde que fue enviado originalmente
         msg_date = getattr(msg, 'date', None)
