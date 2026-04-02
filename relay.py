@@ -137,7 +137,7 @@ Responde SOLO con: "yes" si es trade idea legítima, o "no" si no lo es."""
 async def worker():
     worker_id = 1
     while True:
-        sent, text = await queue.get()
+        text = await queue.get()
         start = datetime.now()
         try:
             log.info(f"Worker picked message; queue size={queue.qsize()}")
@@ -146,14 +146,16 @@ async def worker():
             async with SEMAPHORE:
                 translated = await translate_text(text)
 
-            if translated != text:
+            # Enviar el mensaje traducido al canal destino
+            try:
+                await client.send_message(DEST, translated, parse_mode='md')
+                log.info(f"Message sent translated (parse_mode='md')")
+            except Exception:
                 try:
-                    await sent.edit(translated, parse_mode='md')
-                except Exception:
-                    try:
-                        await sent.edit(translated)
-                    except Exception as e:
-                        log.error(f"Failed to edit message: {e}")
+                    await client.send_message(DEST, translated)
+                    log.info(f"Message sent translated (no parse_mode)")
+                except Exception as e:
+                    log.error(f"Failed to send message: {e}")
 
             elapsed = (datetime.now() - start).total_seconds()
             log.info(f"Worker done in {elapsed:.2f}s")
@@ -209,16 +211,13 @@ async def handler(event):
         else:
             log.info(f"[{ts}] Mensaje recibido")
 
-        #  envío inmediato
-        sent = await client.send_message(DEST, text)
+        #  encola para traducir y enviar (ORDEN GARANTIZADO)
+        await queue.put(text)
 
-        #  encola (ORDEN)
-        await queue.put((sent, text))
-
-        log.info(f"[{ts}] Reenviado inmediato (queue_size={queue.qsize()})")
+        log.info(f"[{ts}] Mensaje encolado para traducción y envío (queue_size={queue.qsize()})")
 
     except Exception as e:
-        log.error(f"Error reenviando: {e}")
+        log.error(f"Error procesando mensaje: {e}")
 
 
 #  MAIN
