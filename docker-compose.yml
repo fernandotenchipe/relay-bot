@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  telegram-relay:
+    build: .
+    container_name: telegram-relay
+    restart: unless-stopped
+    environment:
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - PHONE=${PHONE}
+      - SOURCE_CHANNEL=${SOURCE_CHANNEL}
+      - DEST_CHANNEL=${DEST_CHANNEL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - WORKERS=${WORKERS}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - telegram-relay-network
+
+networks:
+  telegram-relay-network:
+    driver: bridge
