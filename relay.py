@@ -1,13 +1,12 @@
-import os, logging, asyncio, random
+import os, logging, asyncio, random, re
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
-from telethon import Button
 from openai import OpenAI
 
 load_dotenv()
 
 # 🔥 CONFIG
-LISTEN_ALL = True  # 👈 activa/desactiva escuchar actividad manual
+LISTEN_ALL = True
 
 # 🔥 LOGS
 logging.basicConfig(
@@ -30,18 +29,32 @@ OPENAI_KEY = os.getenv('OPENAI_API_KEY')
 BOT_USERNAME = "predictionradar_bot"
 
 client_ai = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
-
 client = TelegramClient('session', API_ID, API_HASH, auto_reconnect=True)
 
 queue = asyncio.Queue()
-
-# 🔴 estado
 waiting_whales = False
 
 
-# 🔹 Traducción
+# 🔹 OPTIMIZACIONES CLAVE
+def trim_text(text):
+    return text[:1200]
+
+def should_translate(text):
+    t = text.lower()
+    if "pnl" in t and "$" in t and "recent trades" not in t:
+        return False
+    return True
+
+def clean_text(text):
+    return re.sub(r'[^\x00-\x7F]+', '', text)
+
+
+# 🔹 Traducción optimizada
 async def translate_text(text: str) -> str:
     if not client_ai:
+        return text
+
+    if not should_translate(text):
         return text
 
     loop = asyncio.get_running_loop()
@@ -50,10 +63,11 @@ async def translate_text(text: str) -> str:
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Traduce al español manteniendo emojis y formato."},
-                {"role": "user", "content": text[:4000]}
+                {"role": "system", "content": "Traduce al español."},
+                {"role": "user", "content": trim_text(text)}
             ],
-            temperature=0.2
+            temperature=0,
+            max_tokens=500
         )
 
     try:
@@ -152,19 +166,18 @@ async def bot_handler(event):
 
     log.info(f"Mensaje del bot ({event.__class__.__name__})")
 
-    # 🔥 MODO ESCUCHA TODO (actividad manual)
+    # 🔥 ESCUCHA MANUAL
     if LISTEN_ALL and text:
 
         if "cargando" in text:
             return
 
-        # filtra solo contenido útil
         if "pnl" in text or "recent trades" in text or "whales (" in text:
             await queue.put(raw)
             log.info("Actividad manual detectada")
             return
 
-    # 🔽 AUTOMÁTICO WHALES
+    # 🔽 AUTOMÁTICO
     if waiting_whales and text:
 
         if "cargando" in text:
@@ -175,7 +188,6 @@ async def bot_handler(event):
             waiting_whales = False
             log.info("Reporte automático enviado")
 
-            # regresar a home
             asyncio.create_task(go_home())
             return
 
