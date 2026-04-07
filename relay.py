@@ -5,7 +5,6 @@ from openai import OpenAI
 
 load_dotenv()
 
-# 🔥 CONFIG
 LISTEN_ALL = True
 
 logging.basicConfig(level=logging.INFO)
@@ -31,43 +30,40 @@ waiting_whales = False
 # =========================
 
 async def translate_text(text: str) -> str:
-    if not client_ai:
-        return text
-
     t = text.lower()
 
-    # ⚡ LISTA (rápido)
+    # ⚡ LISTA WHALES → SIN OPENAI (instantáneo)
     if "whales (" in t and "recent trades" not in t:
-        return await fast_translate(text)
+        return fast_translate(text)
 
-    # 🧠 DETALLE (bonito)
+    # 🧠 DETALLE → OPENAI CONTROLADO
     if "recent trades" in t or "open positions" in t:
         return await detailed_translate(text)
 
     return text
 
 
-# ⚡ RÁPIDO
-async def fast_translate(text):
-    loop = asyncio.get_running_loop()
+# ⚡ TRADUCCIÓN LIMPIA (NO rompe formato)
+def fast_translate(text):
+    replacements = {
+        "Whales": "Ballenas",
+        "Volume": "Vol",
+        "Last active": "Hace",
+        "ago": "",
+    }
 
-    def call():
-        return client_ai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Traduce al español."},
-                {"role": "user", "content": text[:800]}
-            ],
-            temperature=0,
-            max_tokens=300
-        )
+    result = text
+    for en, es in replacements.items():
+        result = result.replace(en, es)
 
-    res = await loop.run_in_executor(None, call)
-    return res.choices[0].message.content.strip()
+    return result
 
 
-# 🧠 BONITO
+# 🧠 TRADUCCIÓN CONTROLADA (sin cortar texto)
 async def detailed_translate(text):
+    if not client_ai:
+        return text
+
     loop = asyncio.get_running_loop()
 
     def call():
@@ -77,18 +73,25 @@ async def detailed_translate(text):
                 {
                     "role": "system",
                     "content": (
-                        "Traduce al español respetando EXACTAMENTE formato, saltos de línea y emojis. "
-                        "No alteres números ni cantidades."
+                        "Traduce al español manteniendo EXACTAMENTE el formato, saltos de línea y emojis. "
+                        "NO cambies números, NO cortes texto, NO resumas."
                     )
                 },
-                {"role": "user", "content": text[:1200]}
+                {
+                    "role": "user",
+                    "content": text  # 🔥 SIN RECORTE
+                }
             ],
             temperature=0,
-            max_tokens=600
+            max_tokens=800
         )
 
-    res = await loop.run_in_executor(None, call)
-    return res.choices[0].message.content.strip()
+    try:
+        res = await loop.run_in_executor(None, call)
+        return res.choices[0].message.content.strip()
+    except Exception as e:
+        log.error(f"OpenAI error: {e}")
+        return text
 
 
 # =========================
@@ -180,8 +183,6 @@ async def bot_handler(event):
     raw = event.message.raw_text or ""
     text = raw.lower()
 
-    log.info(f"Mensaje ({event.__class__.__name__})")
-
     if "cargando" in text:
         return
 
@@ -210,7 +211,6 @@ async def main():
     asyncio.create_task(loop_whales())
 
     log.info("BOT CORRIENDO")
-
     await client.run_until_disconnected()
 
 
