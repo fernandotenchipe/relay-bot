@@ -1,9 +1,13 @@
 import os, logging, asyncio, random
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
+from telethon import Button
 from openai import OpenAI
 
 load_dotenv()
+
+# 🔥 CONFIG
+LISTEN_ALL = True  # 👈 activa/desactiva escuchar actividad manual
 
 # 🔥 LOGS
 logging.basicConfig(
@@ -82,7 +86,7 @@ async def worker():
             queue.task_done()
 
 
-# 🔹 CLICK EN WHALES (sin /start)
+# 🔹 CLICK EN WHALES
 async def trigger_whales():
     global waiting_whales
 
@@ -108,35 +112,71 @@ async def trigger_whales():
         log.error(f"Trigger error: {e}")
 
 
-# 🔁 LOOP NATURAL
+# 🔹 VOLVER A HOME
+async def go_home():
+    try:
+        messages = await client.get_messages(BOT_USERNAME, limit=1)
+        msg = messages[0]
+
+        if msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    btn_text = (btn.text or "").lower()
+
+                    if "home" in btn_text:
+                        await asyncio.sleep(random.uniform(2,4))
+                        await msg.click(text=btn.text)
+                        log.info("Click en Home")
+                        return
+
+    except Exception as e:
+        log.error(f"Home error: {e}")
+
+
+# 🔁 LOOP
 async def loop_whales():
     while True:
         await trigger_whales()
-        await asyncio.sleep(random.uniform(600,1200))  # 10–20 min
+        await asyncio.sleep(random.uniform(600,1200))
 
 
-# 🔹 HANDLER (LO IMPORTANTE)
+# 🔹 HANDLER
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
 async def bot_handler(event):
     global waiting_whales
 
     msg = event.message
-    text = (msg.raw_text or msg.text or "").strip().lower()
+    raw = msg.raw_text or msg.text or ""
+    text = raw.lower().strip()
 
     log.info(f"Mensaje del bot ({event.__class__.__name__})")
 
-    if waiting_whales and text:
+    # 🔥 MODO ESCUCHA TODO (actividad manual)
+    if LISTEN_ALL and text:
 
-        # ❌ ignorar loading
-        if "cargando" in text or "loading" in text:
+        if "cargando" in text:
             return
 
-        # ✅ SOLO esto importa
+        # filtra solo contenido útil
+        if "pnl" in text or "recent trades" in text or "whales (" in text:
+            await queue.put(raw)
+            log.info("Actividad manual detectada")
+            return
+
+    # 🔽 AUTOMÁTICO WHALES
+    if waiting_whales and text:
+
+        if "cargando" in text:
+            return
+
         if "whales (" in text and "pnl" in text:
-            await queue.put(msg.raw_text or msg.text)
+            await queue.put(raw)
             waiting_whales = False
-            log.info("Reporte real enviado")
+            log.info("Reporte automático enviado")
+
+            # regresar a home
+            asyncio.create_task(go_home())
             return
 
 
