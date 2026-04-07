@@ -1,11 +1,11 @@
 import os, logging, asyncio
-from datetime import datetime
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from openai import OpenAI
 
 load_dotenv()
 
+# 🔥 LOGS (archivo + consola)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -20,36 +20,43 @@ log = logging.getLogger(__name__)
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 PHONE = os.getenv('PHONE')
-SOURCE = int(os.getenv('SOURCE_CHANNEL'))
 DEST = int(os.getenv('DEST_CHANNEL'))
 OPENAI_KEY = os.getenv('OPENAI_API_KEY')
 
+BOT_USERNAME = "predictionradar_bot"
+
 client_ai = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
-
-if not OPENAI_KEY:
-    log.warning('OPENAI_API_KEY no configurada. Traducción desactivada.')
-
-print("=== INICIANDO SCRIPT ===")
 
 client = TelegramClient(
     'session',
     API_ID,
     API_HASH,
-    connection_retries=None,
-    retry_delay=2,
-    auto_reconnect=True,
-    request_retries=3
+    auto_reconnect=True
 )
 
-#  COLA GLOBAL (ORDEN)
 queue = asyncio.Queue()
-# Número de workers concurrentes para procesar la cola (evita cuellos de botella)
-WORKERS = int(os.getenv('WORKERS', '3'))
-# Semáforo para limitar llamadas simultáneas a OpenAI
-SEMAPHORE = asyncio.Semaphore(WORKERS)
+
+# 🔴 control de flujo: click en Whales y esperar solo su siguiente respuesta
+waiting_whales_message = False
+waiting_msg_id = None
+waiting_text_snapshot = ""
 
 
-#  Traducción mejorada (textos largos)
+def is_whales_loading_message(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return (
+        "cargando estadisticas de ballenas" in t
+        or "cargando estadísticas de ballenas" in t
+        or ("loading" in t and "whale" in t)
+    )
+
+
+def is_whales_report_message(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return "whales (" in t and "pnl:" in t and "vol:" in t
+
+
+# 🔹 Traducción
 async def translate_text(text: str) -> str:
     if not client_ai:
         return text
@@ -60,105 +67,34 @@ async def translate_text(text: str) -> str:
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "Traduce al español manteniendo emojis y formato Markdown."
-                },
-                {"role": "user", "content": text[:4000]}  # límite seguro
+                {"role": "system", "content": "Traduce al español manteniendo emojis y formato Markdown."},
+                {"role": "user", "content": text[:4000]}
             ],
-            temperature=0.2,
-            max_tokens=1000
+            temperature=0.2
         )
 
     try:
-        # Permitir un tiempo razonable para la llamada a la API
-        response = await asyncio.wait_for(
-            loop.run_in_executor(None, call_openai),
-            timeout=18
-        )
+        response = await loop.run_in_executor(None, call_openai)
         return response.choices[0].message.content.strip()
     except Exception as e:
         log.error(f"OpenAI error: {e}")
         return text
 
 
-#  Identificar si es TRADE IDEA con IA
-async def is_trade_idea(text: str) -> bool:
-    if not client_ai:
-        return "TRADE IDEA" in text.upper()
-
-    loop = asyncio.get_running_loop()
-
-    def call_openai():
-        return client_ai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """Eres un analizador de mensajes de trading. Tu tarea es determinar si el mensaje es una TRADE IDEA VÁLIDA y LEGÍTIMA.
-
-DESCARTA si:
-- Contiene links externos (http, https, t.me, click here, claim, unlock, etc)
-- Es promoción o spam (VIP, SPOT, LOCK, PREMIUM, JOIN, mentiones a canales/grupos)
-- Es una pregunta (ej: "Which direction? Buy or Sell?")
-- Contiene referencias a marcas externas o canales
-- Pide que hagas click o se unan a algo
-
-ACEPTA solo si:
-- Tiene instrumento claro (XAUUSD, BTC, EURUSD, etc)
-- Tiene dirección de entrada (BUY o SELL)
-- Tiene al menos 1 TP (Take Profit) o SL (Stop Loss)
-- Tiene precio de entrada
-- Es contenido educativo/información de tradeo PURO
-
-Responde SOLO con: "yes" si es trade idea legítima, o "no" si no lo es."""
-                },
-                {"role": "user", "content": text[:2000]}
-            ],
-            temperature=0,
-            max_tokens=10
-        )
-
-    try:
-        response = await asyncio.wait_for(
-            loop.run_in_executor(None, call_openai),
-            timeout=10
-        )
-        result = response.choices[0].message.content.strip().lower()
-        is_valid = "yes" in result
-        log.info(f"Trade idea check: {is_valid} - Response: {result}")
-        return is_valid
-    except Exception as e:
-        log.error(f"OpenAI trade check error: {e}")
-        return "TRADE IDEA" in text.upper()  # fallback a búsqueda de texto
-
-
-#  WORKER (ORDEN GARANTIZADO)
+# 🔹 WORKER
 async def worker():
-    worker_id = 1
     while True:
         text = await queue.get()
-        start = datetime.now()
+
         try:
-            log.info(f"Worker picked message; queue size={queue.qsize()}")
+            translated = await translate_text(text)
 
-            # Limitar concurrencia de llamadas a OpenAI
-            async with SEMAPHORE:
-                translated = await translate_text(text)
-
-            # Enviar el mensaje traducido al canal destino
             try:
                 await client.send_message(DEST, translated, parse_mode='md')
-                log.info(f"Message sent translated (parse_mode='md')")
-            except Exception:
-                try:
-                    await client.send_message(DEST, translated)
-                    log.info(f"Message sent translated (no parse_mode)")
-                except Exception as e:
-                    log.error(f"Failed to send message: {e}")
+            except:
+                await client.send_message(DEST, translated)
 
-            elapsed = (datetime.now() - start).total_seconds()
-            log.info(f"Worker done in {elapsed:.2f}s")
+            log.info("Mensaje reenviado")
 
         except Exception as e:
             log.error(f"Worker error: {e}")
@@ -167,79 +103,115 @@ async def worker():
             queue.task_done()
 
 
-#  KEEP ALIVE (estabilidad)
-async def keep_alive():
+# 🔹 REFRESH CADA 2 HORAS
+async def refresh():
+    global waiting_whales_message, waiting_msg_id, waiting_text_snapshot
+
     while True:
         try:
-            # Múltiples acciones para forzar sincronización agresiva
-            await client.get_me()
-            await client.get_dialogs(limit=1)
-            # Forzar sincronización de estados
-            await asyncio.sleep(0.5)
-            await client.catch_up()
-            log.debug(f"Keep-alive check OK")
+            # Reinicia el estado en cada ciclo para evitar arrastrar respuestas viejas.
+            waiting_whales_message = False
+            waiting_msg_id = None
+            waiting_text_snapshot = ""
+            log.info("Enviando /start al bot...")
+            await client.send_message(BOT_USERNAME, "/start")
         except Exception as e:
-            log.warning(f"Keep-alive error: {e}")
-        await asyncio.sleep(2)  # Reducido a 2s para forzar polling MUCHO más agresivo
+            log.error(f"Refresh error: {e}")
+
+        await asyncio.sleep(7200)
 
 
-#  HANDLER
-@client.on(events.NewMessage(chats=SOURCE))
-async def handler(event):
-    try:
-        msg = event.message
-        text = getattr(msg, "text", None) or getattr(msg, "message", None) or ""
+# 🔹 HANDLER DEL BOT (LO IMPORTANTE)
+@client.on(events.NewMessage(from_users=BOT_USERNAME))
+@client.on(events.MessageEdited(from_users=BOT_USERNAME))
+async def bot_handler(event):
+    global waiting_whales_message, waiting_msg_id, waiting_text_snapshot
 
-        if not text:
+    msg = event.message
+    text = (msg.raw_text or msg.text or "").strip()
+
+    log.info(f"Mensaje del bot recibido ({event.__class__.__name__})")
+
+    # 🔥 Solo click en el menú inicial, nunca se reenvía ese mensaje.
+    if msg.buttons and "Prediction Radar" in text:
+        whales_button_found = False
+
+        for row in msg.buttons:
+            for btn in row:
+                btn_text = (btn.text or "").strip()
+
+                # Evita coincidir con "My Whales" o "Archived Whales".
+                if btn_text.replace("🐋", "").strip().lower() == "whales":
+                    whales_button_found = True
+                    await asyncio.sleep(2)
+                    try:
+                        waiting_whales_message = True
+                        waiting_msg_id = msg.id
+                        waiting_text_snapshot = text
+
+                        callback = await msg.click(text=btn_text)
+                        waiting_whales_message = True
+                        log.info("Click en Whales realizado")
+
+                        # Algunos bots responden por callback sin enviar mensaje nuevo.
+                        callback_text = (getattr(callback, "message", "") or "").strip()
+                        if callback_text:
+                            if is_whales_loading_message(callback_text):
+                                log.info("Respuesta intermedia de Whales detectada; esperando reporte final")
+                            elif is_whales_report_message(callback_text):
+                                await queue.put(callback_text)
+                                waiting_whales_message = False
+                                waiting_msg_id = None
+                                waiting_text_snapshot = ""
+                                log.info("Respuesta callback de Whales encolada")
+                            else:
+                                log.info("Callback sin reporte de Whales; esperando siguiente mensaje")
+                    except Exception as e:
+                        waiting_whales_message = False
+                        waiting_msg_id = None
+                        waiting_text_snapshot = ""
+                        log.warning(f"Click falló: {e}")
+
+                    return
+
+        if not whales_button_found:
+            log.warning("No se encontró botón Whales en el menú")
+
+        return
+
+    # 🔥 Solo reenvía el primer mensaje posterior al click en Whales.
+    if waiting_whales_message and text:
+        # Ignora la misma tarjeta del menú sin cambios.
+        if msg.id == waiting_msg_id and text == waiting_text_snapshot:
             return
 
-        ts = datetime.now().strftime("%H:%M:%S")
-        
-        # Verificar si es TRADE IDEA con IA
-        if not await is_trade_idea(text):
-            log.info(f"[{ts}] Mensaje descartado (no es trade idea)")
+        if is_whales_loading_message(text):
+            log.info("Mensaje de carga detectado; esperando reporte final")
             return
-        
-        # Calcular delay desde que fue enviado originalmente
-        msg_date = getattr(msg, 'date', None)
-        if msg_date:
-            try:
-                delay = (datetime.utcnow() - msg_date.replace(tzinfo=None)).total_seconds()
-                log.info(f"[{ts}] Mensaje recibido (original: {msg_date.strftime('%H:%M:%S')}, delay={delay:.0f}s)")
-            except:
-                log.info(f"[{ts}] Mensaje recibido")
-        else:
-            log.info(f"[{ts}] Mensaje recibido")
 
-        #  encola para traducir y enviar (ORDEN GARANTIZADO)
+        if not is_whales_report_message(text):
+            log.info("Mensaje ignorado mientras se espera reporte de Whales")
+            return
+
         await queue.put(text)
+        waiting_whales_message = False
+        waiting_msg_id = None
+        waiting_text_snapshot = ""
+        log.info("Respuesta de Whales encolada")
 
-        log.info(f"[{ts}] Mensaje encolado para traducción y envío (queue_size={queue.qsize()})")
 
-    except Exception as e:
-        log.error(f"Error procesando mensaje: {e}")
-
-
-#  MAIN
+# 🔹 MAIN
 async def main():
-    print("=== SESION INICIADA ===")
-
     await client.get_dialogs()
 
-    #  tareas en background
-    # Lanzar varios workers para procesar la cola en paralelo
-    for i in range(WORKERS):
-        asyncio.create_task(worker())
-    asyncio.create_task(keep_alive())
+    asyncio.create_task(worker())
+    asyncio.create_task(refresh())
 
-    log.info("=== Relay iniciado ===")
-    log.info(f"Escuchando canal: {SOURCE}")
-    log.info(f"Destino: {DEST}")
-    log.info(f"Workers concurrentes: {WORKERS}")
+    log.info("=== BOT CORRIENDO ===")
 
     await client.run_until_disconnected()
 
 
-#  START
+# 🔥 START
 client.start(phone=PHONE)
 client.loop.run_until_complete(main())
