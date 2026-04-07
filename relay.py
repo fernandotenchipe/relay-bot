@@ -5,14 +5,9 @@ from openai import OpenAI
 
 load_dotenv()
 
-# 🔥 CONFIG
 LISTEN_ALL = True
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 API_ID = int(os.getenv('API_ID'))
@@ -30,43 +25,10 @@ queue = asyncio.Queue()
 waiting_whales = False
 
 
-# 🔹 EXTRAER SOLO TEXTO RELEVANTE
-def extract_relevant(text):
-    lines = text.split("\n")
-    result = []
-
-    for line in lines:
-        l = line.lower()
-
-        # ❌ ignorar stats pesados
-        if "pnl" in l or "volume" in l or "last active" in l:
-            result.append(line)
-            continue
-
-        # ✅ traducir trades / posiciones
-        if "buy" in l or "sell" in l or "yes" in l or "no" in l:
-            result.append(line)
-            continue
-
-        # encabezados
-        if "recent trades" in l or "open positions" in l:
-            result.append(line)
-            continue
-
-        # nombre del whale
-        if "🐋" in line:
-            result.append(line)
-            continue
-
-    return "\n".join(result)
-
-
-# 🔹 TRADUCCIÓN HÍBRIDA
+# 🔹 TRADUCCIÓN HÍBRIDA (manteniendo estructura)
 async def translate_text(text: str) -> str:
     if not client_ai:
         return text
-
-    trimmed = extract_relevant(text)
 
     loop = asyncio.get_running_loop()
 
@@ -76,12 +38,19 @@ async def translate_text(text: str) -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": "Traduce al español solo el texto relevante. No traduzcas números, símbolos ni cantidades."
+                    "content": (
+                        "Traduce al español respetando EXACTAMENTE el formato, saltos de línea, emojis y estructura. "
+                        "NO alteres números, símbolos financieros ni cantidades. "
+                        "NO resumas. NO elimines líneas."
+                    )
                 },
-                {"role": "user", "content": trimmed[:800]}
+                {
+                    "role": "user",
+                    "content": text[:1200]  # recorte leve solo para velocidad
+                }
             ],
             temperature=0,
-            max_tokens=300
+            max_tokens=700
         )
 
     try:
@@ -161,9 +130,9 @@ async def handler(event):
     if "cargando" in text:
         return
 
-    # 🔥 actividad manual
+    # 🔥 manual
     if LISTEN_ALL:
-        if "pnl" in text or "recent trades" in text:
+        if "pnl" in text or "whales (" in text:
             await queue.put(raw)
             return
 
