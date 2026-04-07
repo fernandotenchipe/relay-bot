@@ -5,6 +5,7 @@ from openai import OpenAI
 
 load_dotenv()
 
+# 🔥 CONFIG
 LISTEN_ALL = True
 
 logging.basicConfig(level=logging.INFO)
@@ -19,49 +20,81 @@ OPENAI_KEY = os.getenv('OPENAI_API_KEY')
 BOT_USERNAME = "predictionradar_bot"
 
 client_ai = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
-client = TelegramClient('session', API_ID, API_HASH)
+client = TelegramClient('session', API_ID, API_HASH, auto_reconnect=True)
 
 queue = asyncio.Queue()
 waiting_whales = False
 
 
-# 🔹 TRADUCCIÓN HÍBRIDA (manteniendo estructura)
+# =========================
+# 🔥 TRADUCCIÓN INTELIGENTE
+# =========================
+
 async def translate_text(text: str) -> str:
     if not client_ai:
         return text
 
+    t = text.lower()
+
+    # ⚡ LISTA (rápido)
+    if "whales (" in t and "recent trades" not in t:
+        return await fast_translate(text)
+
+    # 🧠 DETALLE (bonito)
+    if "recent trades" in t or "open positions" in t:
+        return await detailed_translate(text)
+
+    return text
+
+
+# ⚡ RÁPIDO
+async def fast_translate(text):
     loop = asyncio.get_running_loop()
 
-    def call_openai():
+    def call():
+        return client_ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Traduce al español."},
+                {"role": "user", "content": text[:800]}
+            ],
+            temperature=0,
+            max_tokens=300
+        )
+
+    res = await loop.run_in_executor(None, call)
+    return res.choices[0].message.content.strip()
+
+
+# 🧠 BONITO
+async def detailed_translate(text):
+    loop = asyncio.get_running_loop()
+
+    def call():
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Traduce al español respetando EXACTAMENTE el formato, saltos de línea, emojis y estructura. "
-                        "NO alteres números, símbolos financieros ni cantidades. "
-                        "NO resumas. NO elimines líneas."
+                        "Traduce al español respetando EXACTAMENTE formato, saltos de línea y emojis. "
+                        "No alteres números ni cantidades."
                     )
                 },
-                {
-                    "role": "user",
-                    "content": text[:1200]  # recorte leve solo para velocidad
-                }
+                {"role": "user", "content": text[:1200]}
             ],
             temperature=0,
-            max_tokens=700
+            max_tokens=600
         )
 
-    try:
-        response = await loop.run_in_executor(None, call_openai)
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        log.error(f"OpenAI error: {e}")
-        return text
+    res = await loop.run_in_executor(None, call)
+    return res.choices[0].message.content.strip()
 
 
+# =========================
 # 🔹 WORKER
+# =========================
+
 async def worker():
     while True:
         text = await queue.get()
@@ -78,65 +111,87 @@ async def worker():
             queue.task_done()
 
 
+# =========================
 # 🔹 CLICK WHALES
+# =========================
+
 async def trigger_whales():
     global waiting_whales
 
-    messages = await client.get_messages(BOT_USERNAME, limit=1)
-    msg = messages[0]
+    try:
+        messages = await client.get_messages(BOT_USERNAME, limit=1)
+        msg = messages[0]
 
-    if msg.buttons:
-        for row in msg.buttons:
-            for btn in row:
-                if "whales" in (btn.text or "").lower():
-                    await asyncio.sleep(random.uniform(2,5))
-                    waiting_whales = True
-                    await msg.click(text=btn.text)
-                    log.info("Click whales")
-                    return
+        if msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    if "whales" in (btn.text or "").lower():
+                        await asyncio.sleep(random.uniform(2,5))
+                        waiting_whales = True
+                        await msg.click(text=btn.text)
+                        log.info("Click Whales")
+                        return
+
+    except Exception as e:
+        log.error(f"Trigger error: {e}")
 
 
+# =========================
 # 🔹 HOME
+# =========================
+
 async def go_home():
-    messages = await client.get_messages(BOT_USERNAME, limit=1)
-    msg = messages[0]
+    try:
+        messages = await client.get_messages(BOT_USERNAME, limit=1)
+        msg = messages[0]
 
-    if msg.buttons:
-        for row in msg.buttons:
-            for btn in row:
-                if "home" in (btn.text or "").lower():
-                    await asyncio.sleep(random.uniform(2,4))
-                    await msg.click(text=btn.text)
-                    log.info("Click home")
-                    return
+        if msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    if "home" in (btn.text or "").lower():
+                        await asyncio.sleep(random.uniform(2,4))
+                        await msg.click(text=btn.text)
+                        log.info("Click Home")
+                        return
+
+    except Exception as e:
+        log.error(f"Home error: {e}")
 
 
+# =========================
 # 🔁 LOOP
+# =========================
+
 async def loop_whales():
     while True:
         await trigger_whales()
         await asyncio.sleep(random.uniform(600,1200))
 
 
+# =========================
 # 🔹 HANDLER
+# =========================
+
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
-async def handler(event):
+async def bot_handler(event):
     global waiting_whales
 
     raw = event.message.raw_text or ""
     text = raw.lower()
 
+    log.info(f"Mensaje ({event.__class__.__name__})")
+
     if "cargando" in text:
         return
 
-    # 🔥 manual
+    # 🔥 MANUAL
     if LISTEN_ALL:
-        if "pnl" in text or "whales (" in text:
+        if "pnl" in text or "whales (" in text or "recent trades" in text:
             await queue.put(raw)
             return
 
-    # 🔽 automático
+    # 🔽 AUTOMÁTICO
     if waiting_whales:
         if "whales (" in text:
             await queue.put(raw)
@@ -144,7 +199,10 @@ async def handler(event):
             asyncio.create_task(go_home())
 
 
+# =========================
 # 🔹 MAIN
+# =========================
+
 async def main():
     await client.get_dialogs()
 
@@ -152,6 +210,7 @@ async def main():
     asyncio.create_task(loop_whales())
 
     log.info("BOT CORRIENDO")
+
     await client.run_until_disconnected()
 
 
