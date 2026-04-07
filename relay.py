@@ -1,4 +1,4 @@
-import os, logging, asyncio
+import os, logging, asyncio, random
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from openai import OpenAI
@@ -27,27 +27,12 @@ BOT_USERNAME = "predictionradar_bot"
 
 client_ai = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 
-client = TelegramClient(
-    'session',
-    API_ID,
-    API_HASH,
-    auto_reconnect=True
-)
+client = TelegramClient('session', API_ID, API_HASH, auto_reconnect=True)
 
 queue = asyncio.Queue()
 
-# 🔴 estado simple
+# 🔴 estado
 waiting_whales = False
-
-
-def is_whales_loading_message(text: str) -> bool:
-    t = (text or "").lower()
-    return "cargando" in t or ("loading" in t and "whale" in t)
-
-
-def is_whales_report_message(text: str) -> bool:
-    t = (text or "").lower()
-    return "whales (" in t and "pnl:" in t and "vol:" in t
 
 
 # 🔹 Traducción
@@ -97,68 +82,62 @@ async def worker():
             queue.task_done()
 
 
-# 🔹 REFRESH
-async def refresh():
+# 🔹 CLICK EN WHALES (sin /start)
+async def trigger_whales():
     global waiting_whales
 
+    try:
+        messages = await client.get_messages(BOT_USERNAME, limit=1)
+        msg = messages[0]
+
+        if msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    btn_text = (btn.text or "").strip()
+
+                    if btn_text.replace("🐋", "").strip().lower() == "whales":
+                        await asyncio.sleep(random.uniform(2,5))
+
+                        waiting_whales = True
+                        await msg.click(text=btn_text)
+
+                        log.info("Click en Whales")
+                        return
+
+    except Exception as e:
+        log.error(f"Trigger error: {e}")
+
+
+# 🔁 LOOP NATURAL
+async def loop_whales():
     while True:
-        try:
-            waiting_whales = False
-            log.info("Enviando /start al bot...")
-            await client.send_message(BOT_USERNAME, "/start")
-        except Exception as e:
-            log.error(f"Refresh error: {e}")
-
-        await asyncio.sleep(7200)
+        await trigger_whales()
+        await asyncio.sleep(random.uniform(600,1200))  # 10–20 min
 
 
-# 🔹 HANDLER (ARREGLADO)
+# 🔹 HANDLER (LO IMPORTANTE)
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
 async def bot_handler(event):
     global waiting_whales
 
     msg = event.message
-    text = (msg.raw_text or msg.text or "").strip()
+    text = (msg.raw_text or msg.text or "").strip().lower()
 
-    log.info(f"Mensaje del bot recibido ({event.__class__.__name__})")
+    log.info(f"Mensaje del bot ({event.__class__.__name__})")
 
-    # 🔥 Detectar menú y hacer click en Whales
-    if msg.buttons and "Prediction Radar" in text:
-        for row in msg.buttons:
-            for btn in row:
-                btn_text = (btn.text or "").strip()
-
-                if btn_text.replace("🐋", "").strip().lower() == "whales":
-                    await asyncio.sleep(2)
-
-                    try:
-                        waiting_whales = True
-                        await msg.click(text=btn_text)
-                        log.info("Click en Whales realizado")
-                    except Exception as e:
-                        waiting_whales = False
-                        log.warning(f"Click falló: {e}")
-
-                    return
-        return
-
-    # 🔥 Esperando respuesta real
     if waiting_whales and text:
 
         # ❌ ignorar loading
-        if is_whales_loading_message(text):
-            log.info("Ignorando mensaje de carga")
+        if "cargando" in text or "loading" in text:
             return
 
-        # ✅ solo aceptar reporte
-        if is_whales_report_message(text):
-            await queue.put(text)
+        # ✅ SOLO esto importa
+        if "whales (" in text and "pnl" in text:
+            await queue.put(msg.raw_text or msg.text)
             waiting_whales = False
-            log.info("Reporte de Whales encolado")
+            log.info("Reporte real enviado")
             return
-
-        log.info("Mensaje ignorado (no es reporte)")
 
 
 # 🔹 MAIN
@@ -166,7 +145,7 @@ async def main():
     await client.get_dialogs()
 
     asyncio.create_task(worker())
-    asyncio.create_task(refresh())
+    asyncio.create_task(loop_whales())
 
     log.info("=== BOT CORRIENDO ===")
 
