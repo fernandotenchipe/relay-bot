@@ -141,8 +141,6 @@ async def ensure_home():
         if not msg or not msg.buttons:
             return
 
-        reached_home = False
-
         for row in msg.buttons:
             for btn in row:
                 t = (btn.text or "").lower()
@@ -154,10 +152,7 @@ async def ensure_home():
                     await human_delay(1.5, 3)
                     await msg.click(text=btn.text)
                     await human_delay(2, 4)
-                    reached_home = True
                     break
-            if reached_home:
-                break
 
 # =========================
 # WAIT
@@ -174,7 +169,7 @@ async def wait_for_content(keyword, timeout=10):
     return False
 
 # =========================
-# NOMBRES
+# NOMBRES (FIX REAL)
 # =========================
 def adapt_whale_names(text):
     replacements = {
@@ -188,18 +183,10 @@ def adapt_whale_names(text):
         "Geopolitical Macro": "Macro Geopolítico"
     }
 
-    lines = text.split("\n")
-    new_lines = []
+    for eng, esp in replacements.items():
+        text = re.sub(rf"\b{re.escape(eng)}\b", esp, text)
 
-    for line in lines:
-        if line.startswith("🐋 "):
-            for eng, esp in replacements.items():
-                if eng in line:
-                    line = line.replace(eng, esp)
-                    break
-        new_lines.append(line)
-
-    return "\n".join(new_lines)
+    return text
 
 # =========================
 # TITULOS
@@ -256,23 +243,25 @@ def clean_whale_alert(text: str) -> str:
     return "\n".join(clean).strip()
 
 # =========================
-# TRANSLATE
+# TRANSLATE (ORDEN CORRECTO)
 # =========================
 async def translate_text(text):
     t = text.lower()
 
     if "whales (" in t:
-        text = adapt_whale_names(text)
         text = await adapt_all_titles(text)
+        text = adapt_whale_names(text)
         return text
 
     if "recent trades" in t or "open positions" in t or "latest winning plays" in t:
         text = await detailed_translate(text)
         text = await adapt_all_titles(text)
+        text = adapt_whale_names(text)
         return text
 
     if "whale alert" in t:
         text = await adapt_all_titles(text)
+        text = adapt_whale_names(text)
         return text
 
     return text
@@ -373,6 +362,7 @@ async def handler(event):
 
         final_text = clean_whale_alert(final_text)
         final_text = await adapt_all_titles(final_text)
+        final_text = adapt_whale_names(final_text)
 
         await queue.put(final_text)
 
