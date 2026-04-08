@@ -257,6 +257,11 @@ def clean_whale_alert(text: str) -> str:
 
     return "\n".join(clean).strip()
 
+def replace_header(text: str) -> str:
+    if "prediction radar" in text.lower():
+        return "🐋 Radar Ballena"
+    return text
+
 # =========================
 # TRANSLATE
 # =========================
@@ -378,6 +383,7 @@ async def handler(event):
         final_text = clean_whale_alert(final_text)
         final_text = await adapt_all_titles(final_text)
         final_text = adapt_whale_names(final_text)
+        final_text = replace_header(final_text)
 
         await queue.put(final_text)
 
@@ -388,20 +394,26 @@ async def handler(event):
         sent_whales_this_cycle = True
         await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
-        await queue.put(msg2.raw_text if msg2 else text)
+        text_final = msg2.raw_text if msg2 else text
+        text_final = replace_header(text_final)
+        await queue.put(text_final)
         return
 
     if "recent trades" in t or "open positions" in t:
         await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
-        await queue.put(msg2.raw_text if msg2 else text)
+        text_final = msg2.raw_text if msg2 else text
+        text_final = replace_header(text_final)
+        await queue.put(text_final)
         return
 
     if "latest winning plays" in t and not sent_winning_this_cycle:
         sent_winning_this_cycle = True
         await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
-        await queue.put(msg2.raw_text if msg2 else text)
+        text_final = msg2.raw_text if msg2 else text
+        text_final = replace_header(text_final)
+        await queue.put(text_final)
         return
 
 # =========================
