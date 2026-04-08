@@ -155,7 +155,7 @@ async def wait_for_content(keyword, timeout=10):
     return False
 
 # =========================
-# NOMBRES (BIEN HECHO)
+# NOMBRES
 # =========================
 def adapt_whale_names(text):
 
@@ -184,7 +184,7 @@ def adapt_whale_names(text):
     return "\n".join(new_lines)
 
 # =========================
-# TITULOS (TODOS)
+# TITULOS
 # =========================
 async def adapt_all_titles(text):
     if not client_ai:
@@ -200,10 +200,7 @@ async def adapt_all_titles(text):
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "Traduce al español manteniendo nombres propios y formato."
-                },
+                {"role": "system", "content": "Traduce al español manteniendo nombres propios y formato."},
                 {"role": "user", "content": "\n".join(matches)}
             ],
             temperature=0.2,
@@ -221,6 +218,25 @@ async def adapt_all_titles(text):
 
     except:
         return text
+
+# =========================
+# 🔥 CLEAN ALERT
+# =========================
+def clean_whale_alert(text: str) -> str:
+    lines = text.split("\n")
+    clean = []
+
+    for line in lines:
+        if "View on Polymarket" in line:
+            break
+        if "http" in line:
+            continue
+        if "New to Polymarket" in line:
+            continue
+
+        clean.append(line)
+
+    return "\n".join(clean).strip()
 
 # =========================
 # TRANSLATE
@@ -274,6 +290,29 @@ async def worker():
         queue.task_done()
 
 # =========================
+# 🔥 FORCE CYCLE
+# =========================
+async def force_cycle():
+    await asyncio.sleep(random.uniform(5,10))
+
+    try:
+        await ensure_home()
+        await human_delay(2,5)
+
+        if await navigator.go_whales():
+            await human_delay(4,8)
+            await explore_whales()
+
+        await navigator.go_home()
+
+        if await navigator.go_winning():
+            await human_delay(5,10)
+            await navigator.go_home()
+
+    except Exception as e:
+        log.error(f"force_cycle error: {e}")
+
+# =========================
 # HANDLER
 # =========================
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
@@ -288,6 +327,22 @@ async def handler(event):
         return
 
     if dedup.is_duplicate(text):
+        return
+
+    # 🔥 WHALE ALERT
+    if "whale alert" in t:
+
+        await asyncio.sleep(1.0)
+        msg2 = await navigator.get_msg()
+        final_text = msg2.raw_text if msg2 else text
+
+        final_text = clean_whale_alert(final_text)
+        final_text = await adapt_all_titles(final_text)
+
+        await queue.put(final_text)
+
+        asyncio.create_task(force_cycle())
+
         return
 
     if "whales (" in t and not sent_whales_this_cycle:
