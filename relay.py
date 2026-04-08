@@ -127,32 +127,47 @@ async def revive_bot():
     return False
 
 # =========================
-# ENSURE HOME
+# ENSURE HOME (FIX)
 # =========================
 async def ensure_home():
-    msg = await navigator.get_msg()
+    for _ in range(5):
 
-    if not msg or not msg.buttons:
-        await revive_bot()
-        return
-
-    for _ in range(3):
         msg = await navigator.get_msg()
         if not msg or not msg.buttons:
+            await revive_bot()
             return
+
+        buttons = [
+            (btn.text or "").lower()
+            for row in msg.buttons
+            for btn in row
+        ]
+
+        # HOME real
+        if any("whales" in b for b in buttons) and any("winning" in b for b in buttons):
+            return
+
+        clicked = False
 
         for row in msg.buttons:
             for btn in row:
                 t = (btn.text or "").lower()
 
-                if "whales" in t and "home" not in t:
-                    return
-
                 if "back" in t or "home" in t:
                     await human_delay(1.5, 3)
-                    await msg.click(text=btn.text)
+                    try:
+                        await msg.click(text=btn.text)
+                    except:
+                        pass
                     await human_delay(2, 4)
+                    clicked = True
                     break
+            if clicked:
+                break
+
+        if not clicked:
+            await revive_bot()
+            return
 
 # =========================
 # WAIT
@@ -169,7 +184,7 @@ async def wait_for_content(keyword, timeout=10):
     return False
 
 # =========================
-# NOMBRES (FIX REAL)
+# NOMBRES
 # =========================
 def adapt_whale_names(text):
     replacements = {
@@ -243,7 +258,7 @@ def clean_whale_alert(text: str) -> str:
     return "\n".join(clean).strip()
 
 # =========================
-# TRANSLATE (ORDEN CORRECTO)
+# TRANSLATE
 # =========================
 async def translate_text(text):
     t = text.lower()
