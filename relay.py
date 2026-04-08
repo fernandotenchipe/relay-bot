@@ -1,15 +1,14 @@
-import os, logging, asyncio, random
+import os, logging, asyncio, random, hashlib
+from collections import OrderedDict
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from openai import OpenAI
 
 load_dotenv()
 
-LISTEN_ALL = True
-
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
-
+# =========================
+# CONFIG
+# =========================
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 PHONE = os.getenv('PHONE')
@@ -18,48 +17,111 @@ OPENAI_KEY = os.getenv('OPENAI_API_KEY')
 
 BOT_USERNAME = "predictionradar_bot"
 
-client_ai = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 client = TelegramClient('session', API_ID, API_HASH, auto_reconnect=True)
+client_ai = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 queue = asyncio.Queue()
-waiting_whales = False
-
 
 # =========================
-# 🔥 TRADUCCIÓN INTELIGENTE
+# STATE
 # =========================
+class State:
+    def __init__(self):
+        self.pending = None
+        self.last_msg_id = None
 
-async def translate_text(text: str) -> str:
+state = State()
+
+# =========================
+# DEDUP LRU
+# =========================
+class Dedup:
+    def __init__(self, max_size=1000):
+        self.cache = OrderedDict()
+        self.max = max_size
+
+    def is_duplicate(self, text):
+        h = hashlib.md5(text.encode()).hexdigest()
+        if h in self.cache:
+            return True
+        self.cache[h] = True
+        if len(self.cache) > self.max:
+            self.cache.popitem(last=False)
+        return False
+
+dedup = Dedup()
+
+# =========================
+# NAVIGATOR
+# =========================
+class Navigator:
+
+    async def get_msg(self):
+        msgs = await client.get_messages(BOT_USERNAME, limit=5)
+        for m in msgs:
+            if m.buttons:
+                return m
+        return None
+
+    async def click(self, text, wait_for=None):
+        msg = await self.get_msg()
+        if not msg or not msg.buttons:
+            return False
+
+        for row in msg.buttons:
+            for btn in row:
+                if text.lower() in (btn.text or "").lower():
+                    state.pending = wait_for
+                    state.last_msg_id = msg.id
+                    await msg.click(text=btn.text)
+                    return True
+
+        return False
+
+    async def go_home(self):
+        return await self.click("home")
+
+    async def go_whales(self):
+        return await self.click("whales", "whales (")
+
+    async def go_winning(self):
+        return await self.click("winning", "winning")
+
+navigator = Navigator()
+
+# =========================
+# WAIT HELPER
+# =========================
+async def wait_for_content(keyword, timeout=10):
+    end = asyncio.get_event_loop().time() + timeout
+
+    while asyncio.get_event_loop().time() < end:
+        msg = await navigator.get_msg()
+        if msg and keyword.lower() in (msg.raw_text or "").lower():
+            return True
+        await asyncio.sleep(0.8)
+
+    log.warning(f"Timeout esperando: {keyword}")
+    return False
+
+# =========================
+# TRADUCCIÓN
+# =========================
+async def translate_text(text):
     t = text.lower()
 
-    # ⚡ LISTA WHALES → SIN OPENAI (instantáneo)
     if "whales (" in t and "recent trades" not in t:
-        return fast_translate(text)
+        return text
 
-    # 🧠 DETALLE → OPENAI CONTROLADO
-    if "recent trades" in t or "open positions" in t:
+    if "recent trades" in t:
         return await detailed_translate(text)
 
     return text
 
 
-# ⚡ TRADUCCIÓN LIMPIA (NO rompe formato)
-def fast_translate(text):
-    replacements = {
-        "Whales": "Ballenas",
-        "Volume": "Vol",
-        "Last active": "Hace",
-        "ago": "",
-    }
-
-    result = text
-    for en, es in replacements.items():
-        result = result.replace(en, es)
-
-    return result
-
-
-# 🧠 TRADUCCIÓN CONTROLADA (sin cortar texto)
 async def detailed_translate(text):
     if not client_ai:
         return text
@@ -70,20 +132,11 @@ async def detailed_translate(text):
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Traduce al español manteniendo EXACTAMENTE el formato, saltos de línea y emojis. "
-                        "NO cambies números, NO cortes texto, NO resumas."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": text  # 🔥 SIN RECORTE
-                }
+                {"role": "system", "content": "Traduce al español manteniendo formato exacto."},
+                {"role": "user", "content": text}
             ],
             temperature=0,
-            max_tokens=800
+            max_tokens=700
         )
 
     try:
@@ -93,11 +146,9 @@ async def detailed_translate(text):
         log.error(f"OpenAI error: {e}")
         return text
 
-
 # =========================
-# 🔹 WORKER
+# WORKER
 # =========================
-
 async def worker():
     while True:
         text = await queue.get()
@@ -105,110 +156,112 @@ async def worker():
         try:
             translated = await translate_text(text)
             await client.send_message(DEST, translated)
-            log.info("Mensaje enviado")
-
         except Exception as e:
             log.error(f"Worker error: {e}")
+            try:
+                await client.send_message(DEST, text)
+            except Exception as e2:
+                log.error(f"Fallback error: {e2}")
 
-        finally:
-            queue.task_done()
-
-
-# =========================
-# 🔹 CLICK WHALES
-# =========================
-
-async def trigger_whales():
-    global waiting_whales
-
-    try:
-        messages = await client.get_messages(BOT_USERNAME, limit=1)
-        msg = messages[0]
-
-        if msg.buttons:
-            for row in msg.buttons:
-                for btn in row:
-                    if "whales" in (btn.text or "").lower():
-                        await asyncio.sleep(random.uniform(2,5))
-                        waiting_whales = True
-                        await msg.click(text=btn.text)
-                        log.info("Click Whales")
-                        return
-
-    except Exception as e:
-        log.error(f"Trigger error: {e}")
-
+        queue.task_done()
 
 # =========================
-# 🔹 HOME
+# HANDLER
 # =========================
-
-async def go_home():
-    try:
-        messages = await client.get_messages(BOT_USERNAME, limit=1)
-        msg = messages[0]
-
-        if msg.buttons:
-            for row in msg.buttons:
-                for btn in row:
-                    if "home" in (btn.text or "").lower():
-                        await asyncio.sleep(random.uniform(2,4))
-                        await msg.click(text=btn.text)
-                        log.info("Click Home")
-                        return
-
-    except Exception as e:
-        log.error(f"Home error: {e}")
-
-
-# =========================
-# 🔁 LOOP
-# =========================
-
-async def loop_whales():
-    while True:
-        await trigger_whales()
-        await asyncio.sleep(random.uniform(600,1200))
-
-
-# =========================
-# 🔹 HANDLER
-# =========================
-
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
-async def bot_handler(event):
-    global waiting_whales
+async def handler(event):
+    msg = event.message
+    text = msg.raw_text or ""
 
-    raw = event.message.raw_text or ""
-    text = raw.lower()
-
-    if "cargando" in text:
+    if "cargando" in text.lower():
         return
 
-    # 🔥 MANUAL
-    if LISTEN_ALL:
-        if "pnl" in text or "whales (" in text or "recent trades" in text:
-            await queue.put(raw)
+    # 🔥 filtrar mensaje activo
+    if state.last_msg_id and msg.id != state.last_msg_id:
+        return
+
+    if dedup.is_duplicate(text):
+        return
+
+    if state.pending:
+        if state.pending.lower() in text.lower():
+            state.pending = None
+            await queue.put(text)
             return
 
-    # 🔽 AUTOMÁTICO
-    if waiting_whales:
-        if "whales (" in text:
-            await queue.put(raw)
-            waiting_whales = False
-            asyncio.create_task(go_home())
-
+    if "pnl" in text.lower() or "recent trades" in text.lower():
+        await queue.put(text)
 
 # =========================
-# 🔹 MAIN
+# EXPLORAR WHALES
 # =========================
+async def explore_whales(limit=3):
+    msg = await navigator.get_msg()
 
+    if not msg or not msg.buttons:
+        return
+
+    whale_buttons = [
+        btn.text for row in msg.buttons
+        for btn in row
+        if btn.text
+        and "home" not in btn.text.lower()
+        and "back" not in btn.text.lower()
+    ]
+
+    for label in whale_buttons[:limit]:
+
+        ok = await navigator.click(label, "pnl")
+        if not ok:
+            continue
+
+        await wait_for_content("pnl")
+
+        await navigator.click("back", "whales (")
+        await wait_for_content("whales (")
+
+# =========================
+# LOOP
+# =========================
+async def crawler_loop():
+    while True:
+        try:
+            log.info("CRAWLER LOOP")
+
+            ok = await navigator.go_whales()
+            if not ok:
+                await asyncio.sleep(30)
+                continue
+
+            arrived = await wait_for_content("whales (")
+            if not arrived:
+                continue
+
+            await explore_whales(limit=3)
+
+            await navigator.go_home()
+            await asyncio.sleep(2)
+
+            ok = await navigator.go_winning()
+            if ok:
+                await asyncio.sleep(3)
+                await navigator.go_home()
+
+            await asyncio.sleep(random.uniform(600,1200))
+
+        except Exception as e:
+            log.error(f"Crawler error: {e}")
+            await asyncio.sleep(60)
+
+# =========================
+# MAIN
+# =========================
 async def main():
     await client.get_dialogs()
 
     asyncio.create_task(worker())
-    asyncio.create_task(loop_whales())
+    asyncio.create_task(crawler_loop())
 
     log.info("BOT CORRIENDO")
     await client.run_until_disconnected()
