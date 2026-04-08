@@ -236,7 +236,7 @@ async def worker():
         queue.task_done()
 
 # =========================
-# HANDLER (FIX AQUÍ)
+# HANDLER
 # =========================
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
@@ -257,32 +257,29 @@ async def handler(event):
 
     t = text.lower()
 
-    # 🐋 LISTA (1 vez)
     if "whales (" in t and not sent_whales_this_cycle:
         sent_whales_this_cycle = True
 
-        await asyncio.sleep(1.5)  # 🔥 FIX
+        await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
         final_text = msg2.raw_text if msg2 else text
 
         await queue.put(final_text)
         return
 
-    # 🐋 DETALLE
     if "recent trades" in t or "open positions" in t:
 
-        await asyncio.sleep(1.5)  # 🔥 FIX
+        await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
         final_text = msg2.raw_text if msg2 else text
 
         await queue.put(final_text)
         return
 
-    # 🏆 WINNING
     if "latest winning plays" in t and not sent_winning_this_cycle:
         sent_winning_this_cycle = True
 
-        await asyncio.sleep(1.5)  # 🔥 FIX
+        await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
         final_text = msg2.raw_text if msg2 else text
 
@@ -290,9 +287,9 @@ async def handler(event):
         return
 
 # =========================
-# EXPLORE
+# EXPLORE (🔥 FIX AQUI)
 # =========================
-async def explore_whales(limit=3):
+async def explore_whales(limit=9):
     msg = await navigator.get_msg()
 
     if not msg or not msg.buttons:
@@ -303,6 +300,8 @@ async def explore_whales(limit=3):
         for btn in row
         if btn.text and "home" not in btn.text.lower() and "back" not in btn.text.lower()
     ]
+
+    random.shuffle(whale_buttons)  # 🔥 RANDOM
 
     for label in whale_buttons[:limit]:
 
@@ -352,7 +351,7 @@ async def crawler_loop():
             await wait_for_content("whales (")
             await human_delay(5,12)
 
-            await explore_whales(limit=3)
+            await explore_whales(limit=9)  # 🔥 9 WHALES
 
             await navigator.go_home()
             await human_delay(2,5)
