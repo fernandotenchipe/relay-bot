@@ -22,7 +22,11 @@ log = logging.getLogger(__name__)
 
 queue = asyncio.Queue()
 
+# =========================
+# FLAGS
+# =========================
 sent_whales_this_cycle = False
+sent_winning_this_cycle = False
 
 # =========================
 # HUMAN DELAY
@@ -214,7 +218,7 @@ async def worker():
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
 async def handler(event):
-    global sent_whales_this_cycle
+    global sent_whales_this_cycle, sent_winning_this_cycle
 
     msg = event.message
     text = msg.raw_text or ""
@@ -230,13 +234,20 @@ async def handler(event):
 
     t = text.lower()
 
+    # 🐋 SOLO 1 WHALES
     if "whales (" in t and not sent_whales_this_cycle:
         sent_whales_this_cycle = True
         await queue.put(text)
         return
 
+    # 🏆 SOLO 1 WINNING
+    if "latest winning plays" in t and not sent_winning_this_cycle:
+        sent_winning_this_cycle = True
+        await queue.put(text)
+        return
+
 # =========================
-# EXPLORE
+# EXPLORE WHALES
 # =========================
 async def explore_whales(limit=3):
     msg = await navigator.get_msg()
@@ -271,13 +282,14 @@ async def explore_whales(limit=3):
 # LOOP
 # =========================
 async def crawler_loop():
-    global sent_whales_this_cycle
+    global sent_whales_this_cycle, sent_winning_this_cycle
 
     while True:
         try:
             log.info("CRAWLER LOOP")
 
             sent_whales_this_cycle = False
+            sent_winning_this_cycle = False
 
             msg = await navigator.get_msg()
             if not msg or not msg.buttons:
@@ -289,6 +301,7 @@ async def crawler_loop():
             await ensure_home()
             await human_delay(2,6)
 
+            # 🐋 WHALES
             ok = await navigator.go_whales()
             if not ok:
                 await asyncio.sleep(30)
@@ -302,11 +315,22 @@ async def crawler_loop():
             await navigator.go_home()
             await human_delay(2,5)
 
+            # 🏆 WINNING PLAYS
             ok = await navigator.go_winning()
-            if ok:
-                await human_delay(3,8)
-                await navigator.go_home()
 
+            if ok:
+                arrived = await wait_for_content("latest winning plays")
+
+                if arrived:
+                    await human_delay(6,12)
+
+                    if random.random() < 0.3:
+                        await human_delay(3,6)
+
+                await navigator.go_home()
+                await human_delay(2,5)
+
+            # 🔁 LOOP RANDOM
             await asyncio.sleep(random.uniform(600,10800))
 
         except Exception as e:
