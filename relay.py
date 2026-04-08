@@ -22,9 +22,6 @@ log = logging.getLogger(__name__)
 
 queue = asyncio.Queue()
 
-# =========================
-# FLAGS
-# =========================
 sent_whales_this_cycle = False
 sent_winning_this_cycle = False
 
@@ -211,7 +208,10 @@ async def translate_text(text):
     if "whales (" in t and "recent trades" not in t:
         return await adapt_whale_names(text)
 
-    if "recent trades" in t:
+    if "recent trades" in t or "open positions" in t:
+        return await detailed_translate(text)
+
+    if "latest winning plays" in t:
         return await detailed_translate(text)
 
     return text
@@ -226,7 +226,7 @@ async def detailed_translate(text):
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Traduce al español manteniendo formato exacto."},
+                {"role": "system", "content": "Traduce TODO al español manteniendo formato exacto."},
                 {"role": "user", "content": text}
             ],
             temperature=0,
@@ -274,11 +274,18 @@ async def handler(event):
 
     t = text.lower()
 
+    # 🐋 lista (1 vez)
     if "whales (" in t and not sent_whales_this_cycle:
         sent_whales_this_cycle = True
         await queue.put(text)
         return
 
+    # 🐋 detalle (SIEMPRE)
+    if "recent trades" in t or "open positions" in t:
+        await queue.put(text)
+        return
+
+    # 🏆 winning (1 vez)
     if "latest winning plays" in t and not sent_winning_this_cycle:
         sent_winning_this_cycle = True
         await queue.put(text)
