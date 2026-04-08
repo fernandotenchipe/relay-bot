@@ -22,9 +22,6 @@ log = logging.getLogger(__name__)
 
 queue = asyncio.Queue()
 
-# =========================
-# CONTROL CICLO
-# =========================
 sent_whales_this_cycle = False
 
 # =========================
@@ -101,11 +98,36 @@ class Navigator:
 navigator = Navigator()
 
 # =========================
+# REVIVE BOT
+# =========================
+async def revive_bot():
+    log.warning("Bot sin botones → enviando /start")
+
+    await human_delay(3,8)
+    await client.send_message(BOT_USERNAME, "/start")
+
+    for _ in range(10):
+        await asyncio.sleep(random.uniform(1,2))
+        msg = await navigator.get_msg()
+        if msg and msg.buttons:
+            log.info("Bot revivido")
+            return True
+
+    return False
+
+# =========================
 # ENSURE HOME
 # =========================
 async def ensure_home():
+    msg = await navigator.get_msg()
+
+    if not msg or not msg.buttons:
+        await revive_bot()
+        return
+
     for _ in range(3):
         msg = await navigator.get_msg()
+
         if not msg or not msg.buttons:
             return
 
@@ -208,14 +230,9 @@ async def handler(event):
 
     t = text.lower()
 
-    # 🔥 SOLO 1 VEZ WHALES
     if "whales (" in t and not sent_whales_this_cycle:
         sent_whales_this_cycle = True
         await queue.put(text)
-        return
-
-    # opcional detalles (puedes comentar esto si no quieres nada más)
-    if "recent trades" in t:
         return
 
 # =========================
@@ -223,6 +240,7 @@ async def handler(event):
 # =========================
 async def explore_whales(limit=3):
     msg = await navigator.get_msg()
+
     if not msg or not msg.buttons:
         return
 
@@ -259,8 +277,14 @@ async def crawler_loop():
         try:
             log.info("CRAWLER LOOP")
 
-            # reset flag
             sent_whales_this_cycle = False
+
+            msg = await navigator.get_msg()
+            if not msg or not msg.buttons:
+                ok = await revive_bot()
+                if not ok:
+                    await asyncio.sleep(60)
+                    continue
 
             await ensure_home()
             await human_delay(2,6)
