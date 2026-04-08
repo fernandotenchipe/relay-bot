@@ -93,6 +93,28 @@ class Navigator:
 navigator = Navigator()
 
 # =========================
+# ENSURE HOME
+# =========================
+async def ensure_home():
+    for _ in range(3):
+        msg = await navigator.get_msg()
+
+        if not msg or not msg.buttons:
+            return
+
+        for row in msg.buttons:
+            for btn in row:
+                text = (btn.text or "").lower()
+
+                if "whales" in text and "home" not in text:
+                    return
+
+                if "back" in text or "home" in text:
+                    await msg.click(text=btn.text)
+                    await asyncio.sleep(random.uniform(1.5, 3))
+                    break
+
+# =========================
 # WAIT HELPER
 # =========================
 async def wait_for_content(keyword, timeout=10):
@@ -177,7 +199,6 @@ async def handler(event):
     if "cargando" in text.lower():
         return
 
-    # 🔥 filtrar mensaje activo
     if state.last_msg_id and msg.id != state.last_msg_id:
         return
 
@@ -229,6 +250,11 @@ async def crawler_loop():
         try:
             log.info("CRAWLER LOOP")
 
+            # 🔥 SIEMPRE EMPEZAR DESDE HOME
+            await ensure_home()
+
+            await asyncio.sleep(random.uniform(1,3))
+
             ok = await navigator.go_whales()
             if not ok:
                 await asyncio.sleep(30)
@@ -241,14 +267,15 @@ async def crawler_loop():
             await explore_whales(limit=3)
 
             await navigator.go_home()
-            await asyncio.sleep(2)
+            await asyncio.sleep(random.uniform(1,3))
 
             ok = await navigator.go_winning()
             if ok:
                 await asyncio.sleep(3)
                 await navigator.go_home()
 
-            await asyncio.sleep(random.uniform(600,1200))
+            # 🔥 RANDOM REAL (10 min → 3 horas)
+            await asyncio.sleep(random.uniform(600, 10800))
 
         except Exception as e:
             log.error(f"Crawler error: {e}")
