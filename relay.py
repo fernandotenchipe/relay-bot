@@ -80,7 +80,7 @@ class Navigator:
         for row in msg.buttons:
             for btn in row:
                 if text.lower() in (btn.text or "").lower():
-                    await human_delay(2,5)
+                    await human_delay(2, 5)
                     state.pending = wait_for
                     state.last_msg_id = msg.id
                     await msg.click(text=btn.text)
@@ -102,11 +102,11 @@ navigator = Navigator()
 # REVIVE BOT
 # =========================
 async def revive_bot():
-    await human_delay(3,8)
+    await human_delay(3, 8)
     await client.send_message(BOT_USERNAME, "/start")
 
     for _ in range(10):
-        await asyncio.sleep(random.uniform(1,2))
+        await asyncio.sleep(random.uniform(1, 2))
         msg = await navigator.get_msg()
         if msg and msg.buttons:
             return True
@@ -127,6 +127,8 @@ async def ensure_home():
         if not msg or not msg.buttons:
             return
 
+        reached_home = False
+
         for row in msg.buttons:
             for btn in row:
                 t = (btn.text or "").lower()
@@ -135,10 +137,13 @@ async def ensure_home():
                     return
 
                 if "back" in t or "home" in t:
-                    await human_delay(1.5,3)
+                    await human_delay(1.5, 3)
                     await msg.click(text=btn.text)
-                    await human_delay(2,4)
+                    await human_delay(2, 4)
+                    reached_home = True
                     break
+            if reached_home:
+                break
 
 # =========================
 # WAIT
@@ -216,11 +221,11 @@ async def adapt_all_titles(text):
 
         return text
 
-    except:
+    except Exception:
         return text
 
 # =========================
-# 🔥 CLEAN ALERT
+# CLEAN ALERT
 # =========================
 def clean_whale_alert(text: str) -> str:
     lines = text.split("\n")
@@ -254,6 +259,10 @@ async def translate_text(text):
         text = await adapt_all_titles(text)
         return text
 
+    if "whale alert" in t:
+        text = await adapt_all_titles(text)
+        return text
+
     return text
 
 async def detailed_translate(text):
@@ -276,7 +285,7 @@ async def detailed_translate(text):
     try:
         res = await loop.run_in_executor(None, call)
         return res.choices[0].message.content.strip()
-    except:
+    except Exception:
         return text
 
 # =========================
@@ -285,28 +294,35 @@ async def detailed_translate(text):
 async def worker():
     while True:
         text = await queue.get()
-        translated = await translate_text(text)
-        await client.send_message(DEST, translated)
+        try:
+            translated = await translate_text(text)
+            await client.send_message(DEST, translated)
+        except Exception:
+            await client.send_message(DEST, text)
         queue.task_done()
 
 # =========================
-# 🔥 FORCE CYCLE
+# FORCE CYCLE
 # =========================
 async def force_cycle():
-    await asyncio.sleep(random.uniform(5,10))
+    await asyncio.sleep(random.uniform(5, 10))
 
     try:
+        # 🔥 empezar limpio desde /start
+        await client.send_message(BOT_USERNAME, "/start")
+        await asyncio.sleep(random.uniform(3, 5))
+
         await ensure_home()
-        await human_delay(2,5)
+        await human_delay(2, 5)
 
         if await navigator.go_whales():
-            await human_delay(4,8)
+            await human_delay(4, 8)
             await explore_whales()
 
         await navigator.go_home()
 
         if await navigator.go_winning():
-            await human_delay(5,10)
+            await human_delay(5, 10)
             await navigator.go_home()
 
     except Exception as e:
@@ -329,9 +345,8 @@ async def handler(event):
     if dedup.is_duplicate(text):
         return
 
-    # 🔥 WHALE ALERT
+    # WHALE ALERT
     if "whale alert" in t:
-
         await asyncio.sleep(1.0)
         msg2 = await navigator.get_msg()
         final_text = msg2.raw_text if msg2 else text
@@ -342,7 +357,6 @@ async def handler(event):
         await queue.put(final_text)
 
         asyncio.create_task(force_cycle())
-
         return
 
     if "whales (" in t and not sent_whales_this_cycle:
@@ -382,14 +396,14 @@ async def explore_whales(limit=9):
     random.shuffle(whale_buttons)
 
     for label in whale_buttons[:limit]:
-        await human_delay(2,6)
+        await human_delay(2, 6)
 
         ok = await navigator.click(label, "pnl")
         if not ok:
             continue
 
         await wait_for_content("pnl")
-        await human_delay(5,12)
+        await human_delay(5, 12)
 
         await navigator.click("back", "whales (")
 
@@ -409,19 +423,19 @@ async def crawler_loop():
             continue
 
         await ensure_home()
-        await human_delay(2,6)
+        await human_delay(2, 6)
 
         if await navigator.go_whales():
-            await human_delay(5,10)
+            await human_delay(5, 10)
             await explore_whales()
 
         await navigator.go_home()
 
         if await navigator.go_winning():
-            await human_delay(6,12)
+            await human_delay(6, 12)
             await navigator.go_home()
 
-        await asyncio.sleep(random.uniform(600,10800))
+        await asyncio.sleep(random.uniform(600, 10800))
 
 # =========================
 # MAIN
