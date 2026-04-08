@@ -24,6 +24,7 @@ queue = asyncio.Queue()
 
 sent_whales_this_cycle = False
 sent_winning_this_cycle = False
+cycle_running = False
 
 # =========================
 # HUMAN DELAY
@@ -80,11 +81,24 @@ class Navigator:
         for row in msg.buttons:
             for btn in row:
                 if text.lower() in (btn.text or "").lower():
+
                     await human_delay(2, 5)
+
+                    msg = await self.get_msg()
+                    if not msg:
+                        return False
+
                     state.pending = wait_for
                     state.last_msg_id = msg.id
-                    await msg.click(text=btn.text)
+
+                    try:
+                        await msg.click(text=btn.text)
+                    except Exception as e:
+                        log.warning(f"Click falló: {e}")
+                        return False
+
                     return True
+
         return False
 
     async def go_home(self):
@@ -163,7 +177,6 @@ async def wait_for_content(keyword, timeout=10):
 # NOMBRES
 # =========================
 def adapt_whale_names(text):
-
     replacements = {
         "Sports Grinder": "Analista Deportivo",
         "Soccer Esports Titan": "Titán Fútbol Esports",
@@ -205,7 +218,7 @@ async def adapt_all_titles(text):
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Traduce al español manteniendo nombres propios y formato."},
+                {"role": "system", "content": "Traduce al español manteniendo formato."},
                 {"role": "user", "content": "\n".join(matches)}
             ],
             temperature=0.2,
@@ -238,7 +251,6 @@ def clean_whale_alert(text: str) -> str:
             continue
         if "New to Polymarket" in line:
             continue
-
         clean.append(line)
 
     return "\n".join(clean).strip()
@@ -305,28 +317,37 @@ async def worker():
 # FORCE CYCLE
 # =========================
 async def force_cycle():
+    global cycle_running
+
+    if cycle_running:
+        return
+
+    cycle_running = True
+
     await asyncio.sleep(random.uniform(5, 10))
 
     try:
-        # 🔥 empezar limpio desde /start
         await client.send_message(BOT_USERNAME, "/start")
         await asyncio.sleep(random.uniform(3, 5))
 
         await ensure_home()
-        await human_delay(2, 5)
+        await human_delay(3, 6)
 
         if await navigator.go_whales():
-            await human_delay(4, 8)
+            await human_delay(5, 10)
             await explore_whales()
 
         await navigator.go_home()
 
         if await navigator.go_winning():
-            await human_delay(5, 10)
+            await human_delay(6, 12)
             await navigator.go_home()
 
     except Exception as e:
         log.error(f"force_cycle error: {e}")
+
+    finally:
+        cycle_running = False
 
 # =========================
 # HANDLER
@@ -345,7 +366,6 @@ async def handler(event):
     if dedup.is_duplicate(text):
         return
 
-    # WHALE ALERT
     if "whale alert" in t:
         await asyncio.sleep(1.0)
         msg2 = await navigator.get_msg()
@@ -356,7 +376,7 @@ async def handler(event):
 
         await queue.put(final_text)
 
-        asyncio.create_task(force_cycle())
+        await force_cycle()
         return
 
     if "whales (" in t and not sent_whales_this_cycle:
@@ -396,7 +416,7 @@ async def explore_whales(limit=9):
     random.shuffle(whale_buttons)
 
     for label in whale_buttons[:limit]:
-        await human_delay(2, 6)
+        await human_delay(3, 7)
 
         ok = await navigator.click(label, "pnl")
         if not ok:
