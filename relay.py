@@ -160,7 +160,7 @@ async def wait_for_content(keyword, timeout=10):
     return False
 
 # =========================
-# 🧠 ADAPT NAMES (CORTOS)
+# 🧠 ADAPT NAMES
 # =========================
 async def adapt_whale_names(text: str) -> str:
     if not client_ai:
@@ -172,21 +172,7 @@ async def adapt_whale_names(text: str) -> str:
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Reemplaza nombres de whales por versiones cortas y genéricas en español.\n"
-                        "- Máximo 2-3 palabras\n"
-                        "- Basado en contexto\n"
-                        "- No frases largas\n"
-                        "- No cambies números\n"
-                        "- Mantén formato\n"
-                        "Ejemplos:\n"
-                        "Esports NBA Dualist Phi → Trader Basket\n"
-                        "Geopolitical Macro Omega → Trader Macro\n"
-                        "Everything Trader Delta → Trader Global"
-                    )
-                },
+                {"role": "system", "content": "Nombres cortos genéricos en español (2-3 palabras)."},
                 {"role": "user", "content": text}
             ],
             temperature=0.2,
@@ -208,10 +194,7 @@ async def translate_text(text):
     if "whales (" in t and "recent trades" not in t:
         return await adapt_whale_names(text)
 
-    if "recent trades" in t or "open positions" in t:
-        return await detailed_translate(text)
-
-    if "latest winning plays" in t:
+    if "recent trades" in t or "open positions" in t or "latest winning plays" in t:
         return await detailed_translate(text)
 
     return text
@@ -253,7 +236,7 @@ async def worker():
         queue.task_done()
 
 # =========================
-# HANDLER
+# HANDLER (FIX AQUÍ)
 # =========================
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
@@ -274,25 +257,40 @@ async def handler(event):
 
     t = text.lower()
 
-    # 🐋 lista (1 vez)
+    # 🐋 LISTA (1 vez)
     if "whales (" in t and not sent_whales_this_cycle:
         sent_whales_this_cycle = True
-        await queue.put(text)
+
+        await asyncio.sleep(1.5)  # 🔥 FIX
+        msg2 = await navigator.get_msg()
+        final_text = msg2.raw_text if msg2 else text
+
+        await queue.put(final_text)
         return
 
-    # 🐋 detalle (SIEMPRE)
+    # 🐋 DETALLE
     if "recent trades" in t or "open positions" in t:
-        await queue.put(text)
+
+        await asyncio.sleep(1.5)  # 🔥 FIX
+        msg2 = await navigator.get_msg()
+        final_text = msg2.raw_text if msg2 else text
+
+        await queue.put(final_text)
         return
 
-    # 🏆 winning (1 vez)
+    # 🏆 WINNING
     if "latest winning plays" in t and not sent_winning_this_cycle:
         sent_winning_this_cycle = True
-        await queue.put(text)
+
+        await asyncio.sleep(1.5)  # 🔥 FIX
+        msg2 = await navigator.get_msg()
+        final_text = msg2.raw_text if msg2 else text
+
+        await queue.put(final_text)
         return
 
 # =========================
-# EXPLORE WHALES
+# EXPLORE
 # =========================
 async def explore_whales(limit=3):
     msg = await navigator.get_msg()
