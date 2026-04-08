@@ -1,4 +1,4 @@
-import os, logging, asyncio, random, hashlib
+import os, logging, asyncio, random, hashlib, re
 from collections import OrderedDict
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
@@ -102,8 +102,6 @@ navigator = Navigator()
 # REVIVE BOT
 # =========================
 async def revive_bot():
-    log.warning("Bot sin botones → enviando /start")
-
     await human_delay(3,8)
     await client.send_message(BOT_USERNAME, "/start")
 
@@ -111,9 +109,7 @@ async def revive_bot():
         await asyncio.sleep(random.uniform(1,2))
         msg = await navigator.get_msg()
         if msg and msg.buttons:
-            log.info("Bot revivido")
             return True
-
     return False
 
 # =========================
@@ -128,7 +124,6 @@ async def ensure_home():
 
     for _ in range(3):
         msg = await navigator.get_msg()
-
         if not msg or not msg.buttons:
             return
 
@@ -160,10 +155,43 @@ async def wait_for_content(keyword, timeout=10):
     return False
 
 # =========================
-# 🧠 ADAPT NAMES
+# NOMBRES (BIEN HECHO)
 # =========================
-async def adapt_whale_names(text: str) -> str:
+def adapt_whale_names(text):
+
+    replacements = {
+        "Sports Grinder": "Analista Deportivo",
+        "Soccer Esports Titan": "Titán Fútbol Esports",
+        "NBA Volume Trader": "Operador NBA",
+        "Esports NBA Dualist": "Dualista NBA Esports",
+        "Everything Trader": "Operador Global",
+        "Global Sports Arb": "Arbitraje Deportivo Global",
+        "Sports Focused": "Especialista Deportivo",
+        "Geopolitical Macro": "Macro Geopolítico"
+    }
+
+    lines = text.split("\n")
+    new_lines = []
+
+    for line in lines:
+        if line.startswith("🐋 "):
+            for eng, esp in replacements.items():
+                if eng in line:
+                    line = line.replace(eng, esp)
+                    break
+        new_lines.append(line)
+
+    return "\n".join(new_lines)
+
+# =========================
+# TITULOS (TODOS)
+# =========================
+async def adapt_all_titles(text):
     if not client_ai:
+        return text
+
+    matches = re.findall(r'"(.*?)"', text)
+    if not matches:
         return text
 
     loop = asyncio.get_running_loop()
@@ -172,16 +200,25 @@ async def adapt_whale_names(text: str) -> str:
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Nombres cortos genéricos en español (2-3 palabras)."},
-                {"role": "user", "content": text}
+                {
+                    "role": "system",
+                    "content": "Traduce al español manteniendo nombres propios y formato."
+                },
+                {"role": "user", "content": "\n".join(matches)}
             ],
             temperature=0.2,
-            max_tokens=500
+            max_tokens=300
         )
 
     try:
         res = await loop.run_in_executor(None, call)
-        return res.choices[0].message.content.strip()
+        translated = res.choices[0].message.content.strip().split("\n")
+
+        for orig, new in zip(matches, translated):
+            text = text.replace(f'"{orig}"', f'"{new}"')
+
+        return text
+
     except:
         return text
 
@@ -191,11 +228,15 @@ async def adapt_whale_names(text: str) -> str:
 async def translate_text(text):
     t = text.lower()
 
-    if "whales (" in t and "recent trades" not in t:
-        return await adapt_whale_names(text)
+    if "whales (" in t:
+        text = adapt_whale_names(text)
+        text = await adapt_all_titles(text)
+        return text
 
     if "recent trades" in t or "open positions" in t or "latest winning plays" in t:
-        return await detailed_translate(text)
+        text = await detailed_translate(text)
+        text = await adapt_all_titles(text)
+        return text
 
     return text
 
@@ -209,7 +250,7 @@ async def detailed_translate(text):
         return client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Traduce TODO al español manteniendo formato exacto."},
+                {"role": "system", "content": "Traduce todo al español manteniendo formato."},
                 {"role": "user", "content": text}
             ],
             temperature=0,
@@ -228,11 +269,8 @@ async def detailed_translate(text):
 async def worker():
     while True:
         text = await queue.get()
-        try:
-            translated = await translate_text(text)
-            await client.send_message(DEST, translated)
-        except:
-            await client.send_message(DEST, text)
+        translated = await translate_text(text)
+        await client.send_message(DEST, translated)
         queue.task_done()
 
 # =========================
@@ -243,55 +281,40 @@ async def worker():
 async def handler(event):
     global sent_whales_this_cycle, sent_winning_this_cycle
 
-    msg = event.message
-    text = msg.raw_text or ""
+    text = event.message.raw_text or ""
+    t = text.lower()
 
-    if "cargando" in text.lower():
-        return
-
-    if state.last_msg_id and msg.id != state.last_msg_id:
+    if "cargando" in t:
         return
 
     if dedup.is_duplicate(text):
         return
 
-    t = text.lower()
-
     if "whales (" in t and not sent_whales_this_cycle:
         sent_whales_this_cycle = True
-
         await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
-        final_text = msg2.raw_text if msg2 else text
-
-        await queue.put(final_text)
+        await queue.put(msg2.raw_text if msg2 else text)
         return
 
     if "recent trades" in t or "open positions" in t:
-
         await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
-        final_text = msg2.raw_text if msg2 else text
-
-        await queue.put(final_text)
+        await queue.put(msg2.raw_text if msg2 else text)
         return
 
     if "latest winning plays" in t and not sent_winning_this_cycle:
         sent_winning_this_cycle = True
-
         await asyncio.sleep(1.5)
         msg2 = await navigator.get_msg()
-        final_text = msg2.raw_text if msg2 else text
-
-        await queue.put(final_text)
+        await queue.put(msg2.raw_text if msg2 else text)
         return
 
 # =========================
-# EXPLORE (🔥 FIX AQUI)
+# EXPLORE
 # =========================
 async def explore_whales(limit=9):
     msg = await navigator.get_msg()
-
     if not msg or not msg.buttons:
         return
 
@@ -301,10 +324,9 @@ async def explore_whales(limit=9):
         if btn.text and "home" not in btn.text.lower() and "back" not in btn.text.lower()
     ]
 
-    random.shuffle(whale_buttons)  # 🔥 RANDOM
+    random.shuffle(whale_buttons)
 
     for label in whale_buttons[:limit]:
-
         await human_delay(2,6)
 
         ok = await navigator.click(label, "pnl")
@@ -314,11 +336,7 @@ async def explore_whales(limit=9):
         await wait_for_content("pnl")
         await human_delay(5,12)
 
-        if random.random() < 0.2:
-            await human_delay(5,10)
-
         await navigator.click("back", "whales (")
-        await wait_for_content("whales (")
 
 # =========================
 # LOOP
@@ -327,53 +345,28 @@ async def crawler_loop():
     global sent_whales_this_cycle, sent_winning_this_cycle
 
     while True:
-        try:
-            log.info("CRAWLER LOOP")
+        sent_whales_this_cycle = False
+        sent_winning_this_cycle = False
 
-            sent_whales_this_cycle = False
-            sent_winning_this_cycle = False
+        msg = await navigator.get_msg()
+        if not msg:
+            await revive_bot()
+            continue
 
-            msg = await navigator.get_msg()
-            if not msg or not msg.buttons:
-                ok = await revive_bot()
-                if not ok:
-                    await asyncio.sleep(60)
-                    continue
+        await ensure_home()
+        await human_delay(2,6)
 
-            await ensure_home()
-            await human_delay(2,6)
+        if await navigator.go_whales():
+            await human_delay(5,10)
+            await explore_whales()
 
-            ok = await navigator.go_whales()
-            if not ok:
-                await asyncio.sleep(30)
-                continue
+        await navigator.go_home()
 
-            await wait_for_content("whales (")
-            await human_delay(5,12)
-
-            await explore_whales(limit=9)  # 🔥 9 WHALES
-
+        if await navigator.go_winning():
+            await human_delay(6,12)
             await navigator.go_home()
-            await human_delay(2,5)
 
-            ok = await navigator.go_winning()
-            if ok:
-                arrived = await wait_for_content("latest winning plays")
-
-                if arrived:
-                    await human_delay(6,12)
-
-                    if random.random() < 0.3:
-                        await human_delay(3,6)
-
-                await navigator.go_home()
-                await human_delay(2,5)
-
-            await asyncio.sleep(random.uniform(600,10800))
-
-        except Exception as e:
-            log.error(e)
-            await asyncio.sleep(60)
+        await asyncio.sleep(random.uniform(600,10800))
 
 # =========================
 # MAIN
@@ -382,7 +375,6 @@ async def main():
     await client.get_dialogs()
     asyncio.create_task(worker())
     asyncio.create_task(crawler_loop())
-    log.info("BOT CORRIENDO")
     await client.run_until_disconnected()
 
 client.start(phone=PHONE)
