@@ -23,6 +23,11 @@ log = logging.getLogger(__name__)
 queue = asyncio.Queue()
 
 # =========================
+# CONTROL CICLO
+# =========================
+sent_whales_this_cycle = False
+
+# =========================
 # HUMAN DELAY
 # =========================
 async def human_delay(min_s=1.5, max_s=4.5):
@@ -77,12 +82,11 @@ class Navigator:
         for row in msg.buttons:
             for btn in row:
                 if text.lower() in (btn.text or "").lower():
-                    await human_delay(2, 5)  # 🧠 pensar antes de click
+                    await human_delay(2,5)
                     state.pending = wait_for
                     state.last_msg_id = msg.id
                     await msg.click(text=btn.text)
                     return True
-
         return False
 
     async def go_home(self):
@@ -107,15 +111,15 @@ async def ensure_home():
 
         for row in msg.buttons:
             for btn in row:
-                text = (btn.text or "").lower()
+                t = (btn.text or "").lower()
 
-                if "whales" in text and "home" not in text:
+                if "whales" in t and "home" not in t:
                     return
 
-                if "back" in text or "home" in text:
-                    await human_delay(1.5, 3)
+                if "back" in t or "home" in t:
+                    await human_delay(1.5,3)
                     await msg.click(text=btn.text)
-                    await human_delay(2, 4)
+                    await human_delay(2,4)
                     break
 
 # =========================
@@ -188,6 +192,8 @@ async def worker():
 @client.on(events.NewMessage(from_users=BOT_USERNAME))
 @client.on(events.MessageEdited(from_users=BOT_USERNAME))
 async def handler(event):
+    global sent_whales_this_cycle
+
     msg = event.message
     text = msg.raw_text or ""
 
@@ -200,14 +206,17 @@ async def handler(event):
     if dedup.is_duplicate(text):
         return
 
-    if state.pending:
-        if state.pending.lower() in text.lower():
-            state.pending = None
-            await queue.put(text)
-            return
+    t = text.lower()
 
-    if "pnl" in text.lower() or "recent trades" in text.lower():
+    # 🔥 SOLO 1 VEZ WHALES
+    if "whales (" in t and not sent_whales_this_cycle:
+        sent_whales_this_cycle = True
         await queue.put(text)
+        return
+
+    # opcional detalles (puedes comentar esto si no quieres nada más)
+    if "recent trades" in t:
+        return
 
 # =========================
 # EXPLORE
@@ -225,32 +234,36 @@ async def explore_whales(limit=3):
 
     for label in whale_buttons[:limit]:
 
-        await human_delay(2, 6)
+        await human_delay(2,6)
 
         ok = await navigator.click(label, "pnl")
         if not ok:
             continue
 
         await wait_for_content("pnl")
-        await human_delay(5, 12)  # 🧠 leer
+        await human_delay(5,12)
 
         if random.random() < 0.2:
-            await human_delay(5, 10)  # distracción
+            await human_delay(5,10)
 
         await navigator.click("back", "whales (")
         await wait_for_content("whales (")
-        await human_delay(2, 5)
 
 # =========================
 # LOOP
 # =========================
 async def crawler_loop():
+    global sent_whales_this_cycle
+
     while True:
         try:
             log.info("CRAWLER LOOP")
 
+            # reset flag
+            sent_whales_this_cycle = False
+
             await ensure_home()
-            await human_delay(2, 6)
+            await human_delay(2,6)
 
             ok = await navigator.go_whales()
             if not ok:
@@ -258,19 +271,19 @@ async def crawler_loop():
                 continue
 
             await wait_for_content("whales (")
-            await human_delay(5, 12)
+            await human_delay(5,12)
 
             await explore_whales(limit=3)
 
             await navigator.go_home()
-            await human_delay(2, 5)
+            await human_delay(2,5)
 
             ok = await navigator.go_winning()
             if ok:
-                await human_delay(3, 8)
+                await human_delay(3,8)
                 await navigator.go_home()
 
-            await asyncio.sleep(random.uniform(600, 10800))
+            await asyncio.sleep(random.uniform(600,10800))
 
         except Exception as e:
             log.error(e)
