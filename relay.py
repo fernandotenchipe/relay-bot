@@ -163,13 +163,53 @@ async def wait_for_content(keyword, timeout=10):
     return False
 
 # =========================
+# 🧠 ADAPT NAMES (CORTOS)
+# =========================
+async def adapt_whale_names(text: str) -> str:
+    if not client_ai:
+        return text
+
+    loop = asyncio.get_running_loop()
+
+    def call():
+        return client_ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Reemplaza nombres de whales por versiones cortas y genéricas en español.\n"
+                        "- Máximo 2-3 palabras\n"
+                        "- Basado en contexto\n"
+                        "- No frases largas\n"
+                        "- No cambies números\n"
+                        "- Mantén formato\n"
+                        "Ejemplos:\n"
+                        "Esports NBA Dualist Phi → Trader Basket\n"
+                        "Geopolitical Macro Omega → Trader Macro\n"
+                        "Everything Trader Delta → Trader Global"
+                    )
+                },
+                {"role": "user", "content": text}
+            ],
+            temperature=0.2,
+            max_tokens=500
+        )
+
+    try:
+        res = await loop.run_in_executor(None, call)
+        return res.choices[0].message.content.strip()
+    except:
+        return text
+
+# =========================
 # TRANSLATE
 # =========================
 async def translate_text(text):
     t = text.lower()
 
     if "whales (" in t and "recent trades" not in t:
-        return text
+        return await adapt_whale_names(text)
 
     if "recent trades" in t:
         return await detailed_translate(text)
@@ -234,13 +274,11 @@ async def handler(event):
 
     t = text.lower()
 
-    # 🐋 SOLO 1 WHALES
     if "whales (" in t and not sent_whales_this_cycle:
         sent_whales_this_cycle = True
         await queue.put(text)
         return
 
-    # 🏆 SOLO 1 WINNING
     if "latest winning plays" in t and not sent_winning_this_cycle:
         sent_winning_this_cycle = True
         await queue.put(text)
@@ -301,7 +339,6 @@ async def crawler_loop():
             await ensure_home()
             await human_delay(2,6)
 
-            # 🐋 WHALES
             ok = await navigator.go_whales()
             if not ok:
                 await asyncio.sleep(30)
@@ -315,9 +352,7 @@ async def crawler_loop():
             await navigator.go_home()
             await human_delay(2,5)
 
-            # 🏆 WINNING PLAYS
             ok = await navigator.go_winning()
-
             if ok:
                 arrived = await wait_for_content("latest winning plays")
 
@@ -330,7 +365,6 @@ async def crawler_loop():
                 await navigator.go_home()
                 await human_delay(2,5)
 
-            # 🔁 LOOP RANDOM
             await asyncio.sleep(random.uniform(600,10800))
 
         except Exception as e:
