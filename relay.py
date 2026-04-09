@@ -188,14 +188,14 @@ async def wait_for_content(keyword, timeout=10):
 # =========================
 def adapt_whale_names(text):
     replacements = {
-        "Sports Grinder": "Analista Deportivo",
-        "Soccer Esports Titan": "Titán Fútbol Esports",
-        "NBA Volume Trader": "Operador NBA",
+        "Sports Grinder": "Depredador Deportivo",
+        "Soccer Esports Titan": "Titán del Fútbol Esports",
+        "NBA Volume Trader": "Titán del Volumen NBA",
         "Esports NBA Dualist": "Dualista NBA Esports",
-        "Everything Trader": "Operador Global",
-        "Global Sports Arb": "Arbitraje Deportivo Global",
+        "Everything Trader": "Trader Total",
+        "Global Sports Arb": "Arbitrajista Deportivo Global",
         "Sports Focused": "Especialista Deportivo",
-        "Geopolitical Macro": "Macro Geopolítico"
+        "Geopolitical Macro": "Estratega Geopolítico"
     }
 
     lines = text.split("\n")
