@@ -483,7 +483,12 @@ async def crawler_loop():
             await human_delay(5, 10)
             await explore_whales()
 
-        await navigator.go_home()
+        ok = await navigator.go_home()
+
+        if not ok:
+            await ensure_home()
+        else:
+            await ensure_home()
 
         if await navigator.go_winning():
             await human_delay(6, 12)
