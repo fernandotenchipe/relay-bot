@@ -198,10 +198,24 @@ def adapt_whale_names(text):
         "Geopolitical Macro": "Macro Geopolítico"
     }
 
-    for eng, esp in replacements.items():
-        text = re.sub(rf"\b{re.escape(eng)}\b", esp, text)
+    lines = text.split("\n")
+    new_lines = []
 
-    return text
+    for line in lines:
+        if line.strip().startswith("🐋"):
+            for eng, esp in replacements.items():
+                if eng.lower() in line.lower():
+                    # Reemplaza el nombre completo, ignorando sufijos adicionales.
+                    line = re.sub(
+                        rf"🐋\s*{re.escape(eng)}[^\n]*",
+                        f"🐋 {esp}",
+                        line,
+                        flags=re.IGNORECASE
+                    )
+                    break
+        new_lines.append(line)
+
+    return "\n".join(new_lines)
 
 # =========================
 # TITULOS
@@ -347,6 +361,9 @@ async def force_cycle():
             await explore_whales()
 
         await navigator.go_home()
+
+        # 🔥 asegurar HOME real antes de ir a winning
+        await ensure_home()
 
         if await navigator.go_winning():
             await human_delay(6, 12)
