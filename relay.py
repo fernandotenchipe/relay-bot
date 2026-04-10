@@ -1,6 +1,7 @@
 import os, logging, hashlib, re, asyncio
 import httpx
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,36 +12,46 @@ PHONE = os.getenv('PHONE')
 
 BACKEND_URL = os.getenv("BACKEND_URL")
 
+
+def get_int_env(name):
+    val = os.getenv(name)
+    if val is None or val.strip() == "":
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        return None
+
 # =========================
 # CHANNEL CONFIG (9 whales)
 # =========================
 CHANNELS = {
     "geo_macro": {
-        "chat_id": int(os.getenv("TG_GEO_MACRO")),
+        "chat_id": get_int_env("TG_GEO_MACRO"),
         "invite_link": os.getenv("TG_GEO_MACRO_INVITE")
     },
     "sports_grinder": {
-        "chat_id": int(os.getenv("TG_SPORTS_GRINDER")),
+        "chat_id": get_int_env("TG_SPORTS_GRINDER"),
         "invite_link": os.getenv("TG_SPORTS_GRINDER_INVITE")
     },
     "nba_volume": {
-        "chat_id": int(os.getenv("TG_NBA_VOLUME")),
+        "chat_id": get_int_env("TG_NBA_VOLUME"),
         "invite_link": os.getenv("TG_NBA_VOLUME_INVITE")
     },
     "nba_dualist": {
-        "chat_id": int(os.getenv("TG_NBA_DUALIST")),
+        "chat_id": get_int_env("TG_NBA_DUALIST"),
         "invite_link": os.getenv("TG_NBA_DUALIST_INVITE")
     },
     "global_trader": {
-        "chat_id": int(os.getenv("TG_GLOBAL_TRADER")),
+        "chat_id": get_int_env("TG_GLOBAL_TRADER"),
         "invite_link": os.getenv("TG_GLOBAL_TRADER_INVITE")
     },
     "sports_arb": {
-        "chat_id": int(os.getenv("TG_SPORTS_ARB")),
+        "chat_id": get_int_env("TG_SPORTS_ARB"),
         "invite_link": os.getenv("TG_SPORTS_ARB_INVITE")
     },
     "sports_focus": {
-        "chat_id": int(os.getenv("TG_SPORTS_FOCUS")),
+        "chat_id": get_int_env("TG_SPORTS_FOCUS"),
         "invite_link": os.getenv("TG_SPORTS_FOCUS_INVITE")
     },
 }
@@ -59,8 +70,11 @@ class Dedup:
     def __init__(self):
         self.cache = set()
 
+    def get_hash(self, text):
+        return hashlib.md5(text.encode()).hexdigest()
+
     def is_duplicate(self, text):
-        h = hashlib.md5(text.encode()).hexdigest()
+        h = self.get_hash(text)
         if h in self.cache:
             return True
         self.cache.add(h)
@@ -108,6 +122,7 @@ WHALE_MAP = {
 
 def normalize_whale(name):
     if not name:
+        log.info("Whale raw: None -> None")
         return None
 
     n = name.lower().strip()
@@ -117,27 +132,49 @@ def normalize_whale(name):
 
     for key, whale_id in WHALE_MAP.items():
         if key in n:
+            log.info(f"Whale raw: {name} -> {whale_id}")
             return whale_id
 
+    log.info(f"Whale raw: {name} -> None")
     return None
 
 # =========================
 # PARSER
 # =========================
+def parse_money(val):
+    if not val:
+        return None
+
+    val = val.lower().replace("$", "").replace(",", "").strip()
+
+    try:
+        if "k" in val:
+            return float(val.replace("k", "").strip()) * 1000
+        if "m" in val:
+            return float(val.replace("m", "").strip()) * 1_000_000
+        return float(val)
+    except Exception:
+        return None
+
+
 def parse_alert(text):
     try:
         whale = re.search(r"👤\s*(.*?)\n", text)
         action = re.search(r"(BUY|SELL)", text)
         answer = re.search(r"(Yes|No)", text)
         market = re.search(r'\"(.*?)\"', text)
-        size = re.search(r"\$(.*?)\n", text)
+        size = re.search(r"Size:\s*\$(.*?)\n", text)
         price = re.search(r"(\d+)¢", text)
-        shares = re.search(r"(\d+)\s*shares", text)
+        shares = re.search(r"\((\d+)\s*shares\)", text)
 
-        whale_name = whale.group(1) if whale else None
-        whale_id = normalize_whale(whale_name or "")
+        whale_name = whale.group(1).strip() if whale else None
+        whale_id = normalize_whale(whale_name)
         log.info(f"RAW whale: {whale_name}")
         log.info(f"Normalized: {whale_id}")
+
+        if not whale_id:
+            log.warning(f"Unknown whale: {whale_name}")
+            return None
 
         return {
             "whale_name": whale_name,
@@ -145,9 +182,9 @@ def parse_alert(text):
             "action": action.group(1) if action else None,
             "answer": answer.group(1) if answer else None,
             "market_title": market.group(1) if market else None,
-            "size_usd": size.group(1) if size else None,
-            "price_cents": price.group(1) if price else None,
-            "shares": shares.group(1) if shares else None,
+            "size_usd": parse_money(size.group(1)) if size else None,
+            "price_cents": int(price.group(1)) if price else None,
+            "shares": int(shares.group(1)) if shares else None,
             "raw_text": text
         }
     except Exception as e:
@@ -169,11 +206,18 @@ def format_alert(alert):
 # SEND TO BACKEND
 # =========================
 async def send_to_backend(data):
-    try:
-        async with httpx.AsyncClient() as client_http:
-            await client_http.post(BACKEND_URL + "/alerts", json=data)
-    except Exception as e:
-        log.error(f"backend error: {e}")
+    if not BACKEND_URL:
+        log.warning("BACKEND_URL not set, skip backend send")
+        return
+
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client_http:
+                await client_http.post(BACKEND_URL + "/alerts", json=data)
+                return
+        except Exception as e:
+            log.error(f"backend error attempt {attempt}: {e}")
+            await asyncio.sleep(2)
 
 
 async def send_to_channel(alert):
@@ -188,12 +232,19 @@ async def send_to_channel(alert):
         return
 
     chat_id = CHANNELS[whale_id]["chat_id"]
+    if not chat_id:
+        log.warning(f"Missing chat_id for {whale_id}")
+        return
+
     message = format_alert(alert)
 
     try:
         await client.send_message(chat_id, message)
+    except FloodWaitError as e:
+        log.warning(f"Flood wait: {e.seconds}s")
+        await asyncio.sleep(e.seconds)
     except Exception as e:
-        log.error(f"Telegram send error: {e}")
+        log.error(f"Telegram error: {e}")
 
 # =========================
 # HANDLER
@@ -202,14 +253,19 @@ async def send_to_channel(alert):
 async def handler(event):
     text = event.message.raw_text or ""
     text = clean_alert(text)
+    log.info(f"Incoming alert:\n{text}")
 
     if "whale alert" not in text.lower():
+        return
+
+    if "price" not in text.lower():
         return
 
     if dedup.is_duplicate(text):
         return
 
     parsed = parse_alert(text)
+    log.info(f"Parsed alert: {parsed}")
     if not parsed:
         return
 
