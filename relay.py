@@ -11,6 +11,40 @@ PHONE = os.getenv('PHONE')
 
 BACKEND_URL = os.getenv("BACKEND_URL")
 
+# =========================
+# CHANNEL CONFIG (9 whales)
+# =========================
+CHANNELS = {
+    "geo_macro": {
+        "chat_id": int(os.getenv("TG_GEO_MACRO")),
+        "invite_link": os.getenv("TG_GEO_MACRO_INVITE")
+    },
+    "sports_grinder": {
+        "chat_id": int(os.getenv("TG_SPORTS_GRINDER")),
+        "invite_link": os.getenv("TG_SPORTS_GRINDER_INVITE")
+    },
+    "nba_volume": {
+        "chat_id": int(os.getenv("TG_NBA_VOLUME")),
+        "invite_link": os.getenv("TG_NBA_VOLUME_INVITE")
+    },
+    "nba_dualist": {
+        "chat_id": int(os.getenv("TG_NBA_DUALIST")),
+        "invite_link": os.getenv("TG_NBA_DUALIST_INVITE")
+    },
+    "global_trader": {
+        "chat_id": int(os.getenv("TG_GLOBAL_TRADER")),
+        "invite_link": os.getenv("TG_GLOBAL_TRADER_INVITE")
+    },
+    "sports_arb": {
+        "chat_id": int(os.getenv("TG_SPORTS_ARB")),
+        "invite_link": os.getenv("TG_SPORTS_ARB_INVITE")
+    },
+    "sports_focus": {
+        "chat_id": int(os.getenv("TG_SPORTS_FOCUS")),
+        "invite_link": os.getenv("TG_SPORTS_FOCUS_INVITE")
+    },
+}
+
 BOT_USERNAME = "predictionradar_bot"
 
 client = TelegramClient('session', API_ID, API_HASH)
@@ -109,6 +143,17 @@ def parse_alert(text):
         log.error(f"parse error: {e}")
         return None
 
+
+def format_alert(alert):
+    return f"""🐋 {alert['whale_name']}
+
+📈 {alert['action']} {alert['answer']}
+📊 \"{alert['market_title']}\"
+
+💰 ${alert['size_usd']}
+💲 {alert['price_cents']}¢ ({alert['shares']} shares)
+"""
+
 # =========================
 # SEND TO BACKEND
 # =========================
@@ -118,6 +163,26 @@ async def send_to_backend(data):
             await client_http.post(BACKEND_URL + "/alerts", json=data)
     except Exception as e:
         log.error(f"backend error: {e}")
+
+
+async def send_to_channel(alert):
+    whale_id = alert.get("whale_id")
+
+    if not whale_id:
+        log.warning("No whale_id, skip telegram")
+        return
+
+    if whale_id not in CHANNELS:
+        log.warning(f"No channel for {whale_id}")
+        return
+
+    chat_id = CHANNELS[whale_id]["chat_id"]
+    message = format_alert(alert)
+
+    try:
+        await client.send_message(chat_id, message)
+    except Exception as e:
+        log.error(f"Telegram send error: {e}")
 
 # =========================
 # HANDLER
@@ -138,6 +203,7 @@ async def handler(event):
         return
 
     await send_to_backend(parsed)
+    await send_to_channel(parsed)
 
 # =========================
 # MAIN
