@@ -93,23 +93,32 @@ def clean_alert(text: str) -> str:
     return "\n".join(clean).strip()
 
 # =========================
-# NORMALIZACION WHALES
+# NORMALIZACION WHALES (FIX)
 # =========================
 WHALE_MAP = {
     "geopolitical macro": "geo_macro",
     "sports grinder": "sports_grinder",
-    "nba volume trader": "nba_volume",
-    "esports nba dualist": "nba_dualist",
+    "nba volume": "nba_volume",
+    "esports nba": "nba_dualist",
     "everything trader": "global_trader",
-    "global sports arb": "sports_arb",
+    "global sports": "sports_arb",
     "sports focused": "sports_focus",
 }
 
+
 def normalize_whale(name):
-    n = name.lower()
-    for k, v in WHALE_MAP.items():
-        if k in n:
-            return v
+    if not name:
+        return None
+
+    n = name.lower().strip()
+
+    # Remove emojis and punctuation to match noisy names.
+    n = re.sub(r"[^\w\s]", "", n)
+
+    for key, whale_id in WHALE_MAP.items():
+        if key in n:
+            return whale_id
+
     return None
 
 # =========================
@@ -117,7 +126,7 @@ def normalize_whale(name):
 # =========================
 def parse_alert(text):
     try:
-        whale = re.search(r"🐋\s*(.*?)\n", text)
+        whale = re.search(r"👤\s*(.*?)\n", text)
         action = re.search(r"(BUY|SELL)", text)
         answer = re.search(r"(Yes|No)", text)
         market = re.search(r'\"(.*?)\"', text)
@@ -127,6 +136,8 @@ def parse_alert(text):
 
         whale_name = whale.group(1) if whale else None
         whale_id = normalize_whale(whale_name or "")
+        log.info(f"RAW whale: {whale_name}")
+        log.info(f"Normalized: {whale_id}")
 
         return {
             "whale_name": whale_name,
