@@ -1,9 +1,11 @@
 import os, logging, hashlib, re, asyncio
 import time
 import urllib.parse
+from urllib.parse import urlparse
 import httpx
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
+from telethon.tl.types import MessageEntityTextUrl, MessageEntityUrl
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -182,6 +184,28 @@ def generic_word_score(a, b):
     return len(aw & bw)
 
 
+def required_terms_present(parsed_query, blob_text):
+    blob = normalize_compact(blob_text)
+
+    market_type = parsed_query.get("market_type")
+
+    if market_type in {"moneyline", "total"}:
+        t1 = normalize_compact(parsed_query.get("team1") or "")
+        t2 = normalize_compact(parsed_query.get("team2") or "")
+
+        has_t1 = bool(t1 and t1 in blob)
+        has_t2 = bool(t2 and t2 in blob)
+
+        # Para A vs B exige que aparezcan ambos lados.
+        return has_t1 and has_t2
+
+    if market_type == "spread":
+        side_team = normalize_compact(parsed_query.get("side_team") or "")
+        return bool(side_team and side_team in blob)
+
+    return True
+
+
 def score_market_candidate(parsed_query, candidate, original_title):
     texts = []
 
@@ -192,6 +216,9 @@ def score_market_candidate(parsed_query, candidate, original_title):
 
     blob = " | ".join(texts)
     blob_norm = normalize(blob)
+
+    if not required_terms_present(parsed_query, blob_norm):
+        return -999
 
     score = 0
 
@@ -292,6 +319,11 @@ async def get_market_id(title: str):
     if not title:
         return None
 
+    parsed_query = parse_market_title(title)
+    if parsed_query["market_type"] == "spread":
+        log.warning(f"[SPREAD NEEDS CONTEXT] {title}")
+        return None
+
     queries = build_search_queries(title)
 
     async with httpx.AsyncClient(timeout=10) as client_http:
@@ -342,6 +374,31 @@ async def get_market_status(market_id: str):
     except Exception as e:
         log.error(f"market status error: {e}")
         return None
+
+
+async def get_market_id_by_slug(slug):
+    if not slug:
+        return None
+
+    url = f"https://gamma-api.polymarket.com/markets/slug/{urllib.parse.quote(slug)}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client_http:
+            res = await client_http.get(url)
+
+            if res.status_code != 200:
+                return None
+
+            data = res.json()
+
+            if isinstance(data, dict) and data.get("id"):
+                log.info(f"[SLUG MATCH] {slug} -> {data.get('id')}")
+                return data.get("id")
+
+    except Exception as e:
+        log.error(f"slug search error: {e}")
+
+    return None
 
 
 def get_int_env(name):
@@ -450,8 +507,6 @@ def clean_alert(text: str) -> str:
         l = line.lower()
 
         # Stop when non-alert promo/noise content starts.
-        if "view on polymarket" in l:
-            break
         if "new to polymarket" in l:
             break
         if "predictionradar" in l:
@@ -571,6 +626,47 @@ def parse_alert(message_text):
     except Exception as e:
         log.error(f"parse error: {e}")
         return None
+
+
+def extract_polymarket_urls(message):
+    urls = []
+
+    text = message.raw_text or ""
+
+    for ent in message.entities or []:
+        if isinstance(ent, MessageEntityTextUrl):
+            if "polymarket.com" in ent.url:
+                urls.append(ent.url)
+
+        elif isinstance(ent, MessageEntityUrl):
+            raw_url = text[ent.offset: ent.offset + ent.length]
+            if "polymarket.com" in raw_url:
+                urls.append(raw_url)
+
+    return urls
+
+
+def extract_slug_from_polymarket_url(url):
+    try:
+        parsed = urlparse(url)
+        parts = [p for p in parsed.path.split("/") if p]
+
+        # Ejemplo: /event/slug
+        if "event" in parts:
+            i = parts.index("event")
+            if i + 1 < len(parts):
+                return parts[i + 1]
+
+        # Ejemplo: /market/slug si viniera así
+        if "market" in parts:
+            i = parts.index("market")
+            if i + 1 < len(parts):
+                return parts[i + 1]
+
+    except Exception:
+        return None
+
+    return None
 
 
 def is_valid_alert(parsed):
@@ -699,7 +795,12 @@ async def worker_loop():
         try:
             async with httpx.AsyncClient(timeout=10) as client_http:
                 # 1. traer alerts no resueltas
-                res = await client_http.get(BACKEND_URL + "/api/alerts?unresolved=true")
+                res = await client_http.get(
+                    BACKEND_URL + "/api/alerts?unresolved=true",
+                    headers={
+                        "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
+                    },
+                )
                 alerts = res.json().get("data", [])
                 seen = set()
 
@@ -713,6 +814,11 @@ async def worker_loop():
                             if resolved_market_id:
                                 await client_http.post(
                                     BACKEND_URL + "/api/alerts/update",
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "Accept": "application/json",
+                                        "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
+                                    },
                                     json={
                                         "id": alert["id"],
                                         "marketId": resolved_market_id
@@ -735,6 +841,11 @@ async def worker_loop():
                     # 2. actualizar backend
                     await client_http.post(
                         BACKEND_URL + "/api/alerts/update",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                            "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
+                        },
                         json={
                             "id": alert["id"],
                             **result
@@ -774,7 +885,17 @@ async def handler(event):
     if dedup.is_duplicate(parsed):
         return
 
-    market_id = await get_market_id(parsed["market_title"])
+    market_id = None
+
+    urls = extract_polymarket_urls(event.message)
+    for url in urls:
+        slug = extract_slug_from_polymarket_url(url)
+        market_id = await get_market_id_by_slug(slug)
+        if market_id:
+            break
+
+    if not market_id:
+        market_id = await get_market_id(parsed["market_title"])
 
     if not market_id:
         log.warning(f"No marketId for: {parsed['market_title']}")
