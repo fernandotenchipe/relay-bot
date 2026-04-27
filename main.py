@@ -229,6 +229,11 @@ def required_terms_present(parsed_query, blob_text):
 
 
 def score_market_candidate(parsed_query, candidate, original_title):
+    rejected, reason = reject_wrong_market_type(parsed_query, candidate)
+
+    if rejected:
+        return -999
+
     texts = []
 
     for key in [
@@ -260,7 +265,7 @@ def score_market_candidate(parsed_query, candidate, original_title):
     if parsed_query["market_type"] == candidate_type:
         score += 6
 
-    if parsed_query["market_type"] in {"moneyline", "total"}:
+    if parsed_query["market_type"] in {"moneyline", "total", "both_teams_score"}:
         score += team_pair_score(parsed_query["team1"], parsed_query["team2"], blob_norm)
 
     if parsed_query["market_type"] == "spread" and parsed_query["side_team"]:
@@ -330,7 +335,7 @@ def candidate_blob(candidate):
     return " | ".join(texts)
 
 
-def pick_best_market(data, original_title):
+async def pick_best_market(client_http, data, original_title):
     parsed_query = parse_market_title(original_title)
 
     scored = []
@@ -355,19 +360,37 @@ def pick_best_market(data, original_title):
     }
     min_score = threshold_map.get(parsed_query["market_type"], 6)
 
-    if not scored:
-        return None
+    for score, candidate in scored[:15]:
+        market_id = candidate.get("id")
 
-    best_score, best = scored[0]
+        if not market_id:
+            continue
 
-    if best_score < min_score:
-        log.info(f"[REJECTED] {original_title} best_score={best_score} min_score={min_score}")
-        return None
+        if score < min_score:
+            continue
 
-    return best.get("id")
+        valid, full_market = await is_valid_market_id(client_http, str(market_id))
+
+        if not valid:
+            log.warning(f"[SKIP_INVALID_MARKET_ID] {market_id} for {original_title}")
+            continue
+
+        ok, reason = validate_market_against_alert(original_title, full_market)
+
+        if not ok:
+            log.warning(
+                f"[SKIP_BAD_MATCH] {original_title} -> {market_id} reason={reason}"
+            )
+            continue
+
+        log.info(f"[MATCH] {original_title} -> {market_id}")
+        return str(market_id)
+
+    log.info(f"[REJECTED] {original_title} no valid candidate min_score={min_score}")
+    return None
 
 
-async def get_market_id(title: str):
+async def get_market_id(title: str, created_at=None):
     if not title:
         return None
 
@@ -410,10 +433,9 @@ async def get_market_id(title: str):
                     seen_ids.add(item_id)
                     all_candidates.append(item)
 
-        best = pick_best_market(all_candidates, title)
+        best = await pick_best_market(client_http, all_candidates, title)
 
         if best:
-            log.info(f"[MATCH] {title} -> {best}")
             return best
 
     log.warning(f"[NO MATCH] {title}")
@@ -437,16 +459,7 @@ async def search_public(client_http, q: str):
         candidates = []
 
         for event in data.get("events") or []:
-            markets = event.get("markets") or []
-
-            # El event también puede servir como candidato.
-            if event.get("id"):
-                candidates.append({
-                    **event,
-                    "_source": "public_search_event",
-                })
-
-            for m in markets:
+            for m in event.get("markets") or []:
                 candidates.append({
                     **m,
                     "_eventTitle": event.get("title"),
@@ -454,6 +467,12 @@ async def search_public(client_http, q: str):
                     "_eventId": event.get("id"),
                     "_source": "public_search_market",
                 })
+
+        for m in data.get("markets") or []:
+            candidates.append({
+                **m,
+                "_source": "public_search_direct_market",
+            })
 
         return candidates
 
@@ -492,6 +511,166 @@ def parse_prices(value):
             prices.append(None)
 
     return prices
+
+
+def extract_numbers(text: str):
+    nums = re.findall(r"[+-]?[0-9]+(?:\.[0-9]+)?", normalize(text or ""))
+    out = []
+
+    for n in nums:
+        try:
+            out.append(float(n))
+        except Exception:
+            pass
+
+    return out
+
+
+def has_exact_line(text: str, line):
+    if line is None:
+        return True
+
+    nums = extract_numbers(text)
+
+    return any(abs(n - float(line)) <= 0.01 for n in nums)
+
+
+def get_candidate_title(candidate):
+    return normalize(
+        candidate.get("title")
+        or candidate.get("question")
+        or candidate.get("name")
+        or ""
+    )
+
+
+def is_player_prop(blob: str):
+    bad_terms = [
+        "points over",
+        "points o/u",
+        "assists over",
+        "assists o/u",
+        "rebounds over",
+        "rebounds o/u",
+        "steals over",
+        "blocks over",
+        "threes over",
+        "player",
+    ]
+
+    return any(term in blob for term in bad_terms)
+
+
+def reject_wrong_market_type(parsed_query, candidate):
+    title = get_candidate_title(candidate)
+    blob = normalize(candidate_blob(candidate))
+
+    market_type = parsed_query.get("market_type")
+
+    if market_type == "total":
+        line = parsed_query.get("line")
+
+        if is_player_prop(blob):
+            return True, "PLAYER_PROP"
+
+        if line is not None and not has_exact_line(blob, line):
+            return True, "LINE_MISMATCH"
+
+        total_terms = [
+            "o/u",
+            "over under",
+            "total",
+            "combine to score",
+            "combined score",
+        ]
+
+        if not any(term in blob for term in total_terms):
+            return True, "TYPE_MISMATCH_TOTAL"
+
+    if market_type == "moneyline":
+        bad_terms = [
+            "series",
+            "spread",
+            "o/u",
+            "over under",
+            "points",
+            "assists",
+            "rebounds",
+            "1h",
+            "first half",
+            "set 1",
+            "handicap",
+        ]
+
+        if any(term in title for term in bad_terms):
+            return True, "TYPE_MISMATCH_MONEYLINE"
+
+    if market_type == "spread":
+        line = parsed_query.get("line")
+
+        if "spread" not in title and "spread" not in blob:
+            return True, "TYPE_MISMATCH_SPREAD"
+
+        if line is not None and not has_exact_line(blob, line):
+            return True, "LINE_MISMATCH"
+
+        if not parsed_query.get("team2") and not parsed_query.get("event_prefix"):
+            return True, "AMBIGUOUS_SPREAD"
+
+    if market_type == "both_teams_score":
+        if "both teams to score" not in blob and "both teams score" not in blob:
+            return True, "TYPE_MISMATCH_BTTS"
+
+    return False, None
+
+
+async def is_valid_market_id(client_http, market_id: str):
+    try:
+        res = await client_http.get(
+            f"https://gamma-api.polymarket.com/markets/{market_id}"
+        )
+
+        if res.status_code != 200:
+            return False, None
+
+        data = res.json()
+
+        if not data.get("id"):
+            return False, None
+
+        if data.get("outcomes") is None:
+            return False, None
+
+        return True, data
+
+    except Exception:
+        return False, None
+
+
+def validate_market_against_alert(market_title: str, market_data: dict):
+    parsed_query = parse_market_title(market_title)
+
+    rejected, reason = reject_wrong_market_type(parsed_query, market_data)
+
+    if rejected:
+        return False, reason
+
+    score = score_market_candidate(parsed_query, market_data, market_title)
+
+    threshold_map = {
+        "moneyline": 8,
+        "total": 10,
+        "spread": 9,
+        "both_teams_score": 8,
+        "unknown": 6,
+    }
+
+    min_score = threshold_map.get(parsed_query["market_type"], 6)
+
+    if score < min_score:
+        return False, f"LOW_SCORE_{score}"
+
+    return True, "OK"
 
 
 async def get_market_status(market_id: str):
@@ -889,6 +1068,104 @@ async def send_to_backend(data):
             await asyncio.sleep(2)
 
 
+async def clear_bad_market_id(client_http, alert, reason: str):
+    alert_id = alert.get("id")
+
+    if not alert_id:
+        return
+
+    log.warning(f"[CLEAR_MARKET_ID] alert={alert_id} reason={reason}")
+
+    await client_http.post(
+        BACKEND_URL + "/api/alerts/update",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
+        },
+        json={
+            "id": alert_id,
+            "marketId": None,
+            "resolved": False,
+            "result": None,
+            "isWin": None,
+        },
+    )
+
+
+def get_alert_market_title(alert):
+    return (
+        alert.get("marketTitle")
+        or alert.get("market_title")
+        or alert.get("question")
+        or ""
+    )
+
+
+async def audit_existing_market_ids(limit=1000):
+    if not BACKEND_URL:
+        log.warning("[AUDIT] BACKEND_URL not set")
+        return
+
+    log.info("[AUDIT] Starting marketId audit...")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client_http:
+            res = await client_http.get(
+                BACKEND_URL + f"/api/alerts?limit={limit}",
+                headers={
+                    "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
+                },
+            )
+
+            payload = res.json()
+            alerts = payload.get("data", [])
+
+            checked = 0
+            kept = 0
+            cleared = 0
+
+            for alert in alerts:
+                market_id = alert.get("marketId") or alert.get("market_id")
+
+                if not market_id:
+                    continue
+
+                market_title = get_alert_market_title(alert)
+
+                if not market_title:
+                    continue
+
+                checked += 1
+
+                valid, full_market = await is_valid_market_id(
+                    client_http,
+                    str(market_id),
+                )
+
+                if not valid:
+                    await clear_bad_market_id(client_http, alert, "CLEAR_404_OR_INVALID")
+                    cleared += 1
+                    continue
+
+                ok, reason = validate_market_against_alert(market_title, full_market)
+
+                if not ok:
+                    await clear_bad_market_id(client_http, alert, reason)
+                    cleared += 1
+                    continue
+
+                kept += 1
+                log.info(f"[KEEP] alert={alert.get('id')} marketId={market_id}")
+
+            log.info(
+                f"[AUDIT_DONE] checked={checked} kept={kept} cleared={cleared}"
+            )
+
+    except Exception as e:
+        log.error(f"[AUDIT_ERROR] {e}")
+
+
 async def send_to_channel(alert):
     whale_id = alert.get("whale_id")
 
@@ -1173,6 +1450,9 @@ async def handler(event):
 async def main():
     await client.start(phone=PHONE)
     log.info("Relay activo")
+
+    if os.getenv("AUDIT_MARKET_IDS_ON_START") == "true":
+        await audit_existing_market_ids(limit=1000)
 
     await asyncio.gather(
         client.run_until_disconnected(),
