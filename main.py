@@ -1,4 +1,5 @@
 import os, logging, hashlib, re, asyncio
+import json
 import time
 import urllib.parse
 from urllib.parse import urlparse
@@ -358,6 +359,38 @@ async def get_market_id(title: str):
     return None
 
 
+def parse_json_field(value, default=None):
+    if default is None:
+        default = []
+
+    if value is None:
+        return default
+
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+
+    return default
+
+
+def parse_prices(value):
+    raw = parse_json_field(value, [])
+
+    prices = []
+    for p in raw:
+        try:
+            prices.append(float(p))
+        except Exception:
+            prices.append(None)
+
+    return prices
+
+
 async def get_market_status(market_id: str):
     url = f"https://gamma-api.polymarket.com/markets/{market_id}"
 
@@ -367,8 +400,15 @@ async def get_market_status(market_id: str):
             data = res.json()
 
             return {
+                "id": data.get("id"),
+                "question": data.get("question"),
+                "slug": data.get("slug"),
                 "closed": data.get("closed"),
-                "outcomes": data.get("outcomes"),
+                "active": data.get("active"),
+                "umaResolutionStatus": data.get("umaResolutionStatus"),
+                "umaResolutionStatuses": data.get("umaResolutionStatuses"),
+                "outcomes": parse_json_field(data.get("outcomes"), []),
+                "outcomePrices": parse_prices(data.get("outcomePrices")),
             }
 
     except Exception as e:
@@ -755,31 +795,119 @@ def normalize_outcome_name(text):
     return normalize_compact(text or "")
 
 
-def evaluate_result(alert, market_data):
-    if not market_data or not market_data.get("closed"):
-        return None
+def same_outcome(a, b):
+    a = normalize_outcome_name(a)
+    b = normalize_outcome_name(b)
 
+    if not a or not b:
+        return False
+
+    if a == b:
+        return True
+
+    # Evita que "no" haga match parcial con palabras largas.
+    if len(a) > 3 and len(b) > 3:
+        if a in b or b in a:
+            return True
+
+    aw = get_words(a)
+    bw = get_words(b)
+
+    if not aw or not bw:
+        return False
+
+    overlap = len(aw & bw)
+    return overlap / min(len(aw), len(bw)) >= 0.75
+
+
+def is_market_final(market_data):
+    if market_data.get("closed") is True:
+        return True
+
+    status = str(market_data.get("umaResolutionStatus") or "").lower()
+    statuses = str(market_data.get("umaResolutionStatuses") or "").lower()
+
+    # "proposed" todavía NO es final.
+    if "resolved" in status or "resolved" in statuses:
+        return True
+
+    return False
+
+
+def get_winning_outcome(market_data):
     outcomes = market_data.get("outcomes") or []
+    prices = market_data.get("outcomePrices") or []
 
-    winner = None
-    if isinstance(outcomes, list):
-        for o in outcomes:
-            if isinstance(o, dict) and o.get("winner"):
-                winner = o.get("name")
-                break
-
-    if not winner:
+    if not outcomes or not prices:
         return None
 
-    answer = normalize_outcome_name(alert.get("answer"))
-    winner_norm = normalize_outcome_name(winner)
+    if len(outcomes) != len(prices):
+        return None
 
-    is_win = answer == winner_norm
+    valid_prices = [p for p in prices if p is not None]
+
+    if not valid_prices:
+        return None
+
+    # Caso 50-50 / void / empate.
+    if len(valid_prices) == 2 and abs(valid_prices[0] - 0.5) <= 0.02 and abs(valid_prices[1] - 0.5) <= 0.02:
+        return {
+            "winner": "50-50",
+            "is_push": True,
+        }
+
+    max_price = max(valid_prices)
+
+    # No marcar ganador si todavía no hay precio claro.
+    if max_price < 0.98:
+        return None
+
+    winner_index = prices.index(max_price)
+
+    return {
+        "winner": outcomes[winner_index],
+        "is_push": False,
+    }
+
+
+def evaluate_result(alert, market_data):
+    if not market_data:
+        return None
+
+    # No marques win/loss hasta que Polymarket esté cerrado/resuelto.
+    if not is_market_final(market_data):
+        return None
+
+    winning = get_winning_outcome(market_data)
+
+    if not winning:
+        return None
+
+    winner = winning["winner"]
+
+    if winning.get("is_push"):
+        return {
+            "resolved": True,
+            "result": winner,
+            "isWin": None,
+        }
+
+    answer = alert.get("answer")
+    action = str(alert.get("action") or "").upper()
+
+    answer_won = same_outcome(answer, winner)
+
+    # BUY outcome = gana si ese outcome ganó.
+    # SELL outcome = gana si ese outcome perdió.
+    if action == "SELL":
+        is_win = not answer_won
+    else:
+        is_win = answer_won
 
     return {
         "resolved": True,
         "result": winner,
-        "isWin": is_win
+        "isWin": is_win,
     }
 
 
@@ -802,7 +930,7 @@ async def worker_loop():
                     },
                 )
                 alerts = res.json().get("data", [])
-                seen = set()
+                market_cache = {}
 
                 for alert in alerts:
                     market_id = alert.get("marketId")
@@ -826,12 +954,14 @@ async def worker_loop():
                                 )
                                 market_id = resolved_market_id
 
-                    if not market_id or market_id in seen:
+                    if not market_id:
                         continue
 
-                    seen.add(market_id)
-
-                    market_data = await get_market_status(market_id)
+                    if market_id in market_cache:
+                        market_data = market_cache[market_id]
+                    else:
+                        market_data = await get_market_status(market_id)
+                        market_cache[market_id] = market_data
 
                     result = evaluate_result(alert, market_data)
 
