@@ -85,6 +85,14 @@ def parse_market_title(title: str):
         result["team2"] = m.group(3).strip()
         return result
 
+    # Both teams to score
+    m = re.match(r"^(.*?)\s+vs\.?\s+(.*?):\s*both teams to score$", low, re.I)
+    if m:
+        result["market_type"] = "both_teams_score"
+        result["team1"] = m.group(1).strip()
+        result["team2"] = m.group(2).strip()
+        return result
+
     # A vs B
     m = re.match(r"^(.*?)\s+vs\.?\s+(.*?)$", low, re.I)
     if m:
@@ -151,6 +159,9 @@ def detect_candidate_type(text: str):
     if "spread" in t:
         return "spread"
 
+    if "both teams to score" in t or "both teams score" in t:
+        return "both_teams_score"
+
     return "moneyline"
 
 
@@ -169,10 +180,15 @@ def team_pair_score(a1, a2, b_text):
     score = 0
     b = normalize_compact(b_text)
 
-    if a1 and normalize_compact(a1) in b:
-        score += 5
-    if a2 and normalize_compact(a2) in b:
-        score += 5
+    for term in expand_team_terms(a1):
+        if term and term in b:
+            score += 5
+            break
+
+    for term in expand_team_terms(a2):
+        if term and term in b:
+            score += 5
+            break
 
     return score
 
@@ -197,12 +213,17 @@ def required_terms_present(parsed_query, blob_text):
         has_t1 = bool(t1 and t1 in blob)
         has_t2 = bool(t2 and t2 in blob)
 
-        # Para A vs B exige que aparezcan ambos lados.
-        return has_t1 and has_t2
+        # Menos estricto: acepta si aparece alguno de los equipos.
+        return has_t1 or has_t2
 
     if market_type == "spread":
         side_team = normalize_compact(parsed_query.get("side_team") or "")
-        return bool(side_team and side_team in blob)
+        if side_team and side_team in blob:
+            return True
+        # Si es spread y no hay team2 definido, avisar ambigüedad
+        if parsed_query.get("market_type") == "spread" and not parsed_query.get("team2"):
+            log.warning(f"[SPREAD AMBIGUOUS] {parsed_query.get('raw')}")
+        return False
 
     return True
 
@@ -210,10 +231,22 @@ def required_terms_present(parsed_query, blob_text):
 def score_market_candidate(parsed_query, candidate, original_title):
     texts = []
 
-    for key in ["title", "question", "description", "slug"]:
+    for key in [
+        "title",
+        "question",
+        "description",
+        "slug",
+        "subtitle",
+        "_eventTitle",
+        "_eventSlug",
+        "outcomes",
+        "groupItemTitle",
+    ]:
         val = candidate.get(key)
         if isinstance(val, str) and val.strip():
             texts.append(val)
+        elif isinstance(val, list):
+            texts.append(" ".join(str(x) for x in val))
 
     blob = " | ".join(texts)
     blob_norm = normalize(blob)
@@ -273,10 +306,27 @@ def score_market_candidate(parsed_query, candidate, original_title):
 
 def candidate_blob(candidate):
     texts = []
-    for key in ["title", "question", "description", "slug"]:
+
+    for key in [
+        "title",
+        "question",
+        "description",
+        "slug",
+        "subtitle",
+        "_eventTitle",
+        "_eventSlug",
+        "outcomes",
+        "groupItemTitle",
+        "gameStatus",
+    ]:
         val = candidate.get(key)
+
         if isinstance(val, str) and val.strip():
             texts.append(val)
+
+        elif isinstance(val, list):
+            texts.append(" ".join(str(x) for x in val))
+
     return " | ".join(texts)
 
 
@@ -301,6 +351,7 @@ def pick_best_market(data, original_title):
         "total": 10,
         "spread": 9,
         "unknown": 6,
+        "both_teams_score": 8,
     }
     min_score = threshold_map.get(parsed_query["market_type"], 6)
 
@@ -332,22 +383,32 @@ async def get_market_id(title: str):
         seen_ids = set()
 
         for q in queries:
-            try:
-                url = "https://gamma-api.polymarket.com/markets?search=" + urllib.parse.quote(q) + "&limit=20"
-                res = await client_http.get(url)
-                data = res.json()
+            # 1) public-search
+            public_candidates = await search_public(client_http, q)
 
-                if not isinstance(data, list):
-                    continue
+            # 2) markets search abierto/cerrado
+            market_candidates = []
+            for closed in ["false", "true"]:
+                try:
+                    res = await client_http.get(
+                        "https://gamma-api.polymarket.com/markets",
+                        params={
+                            "search": q,
+                            "limit": 50,
+                            "closed": closed,
+                        },
+                    )
+                    data = res.json()
+                    if isinstance(data, list):
+                        market_candidates.extend(data)
+                except Exception as e:
+                    log.error(f"market search error for '{q}': {e}")
 
-                for item in data:
-                    item_id = item.get("id")
-                    if item_id and item_id not in seen_ids:
-                        seen_ids.add(item_id)
-                        all_candidates.append(item)
-
-            except Exception as e:
-                log.error(f"search error for '{q}': {e}")
+            for item in public_candidates + market_candidates:
+                item_id = item.get("id")
+                if item_id and item_id not in seen_ids:
+                    seen_ids.add(item_id)
+                    all_candidates.append(item)
 
         best = pick_best_market(all_candidates, title)
 
@@ -357,6 +418,48 @@ async def get_market_id(title: str):
 
     log.warning(f"[NO MATCH] {title}")
     return None
+
+
+async def search_public(client_http, q: str):
+    url = "https://gamma-api.polymarket.com/public-search"
+    params = {
+        "q": q,
+        "limit_per_type": 10,
+        "keep_closed_markets": 1,
+        "search_profiles": "false",
+        "search_tags": "false",
+    }
+
+    try:
+        res = await client_http.get(url, params=params)
+        data = res.json()
+
+        candidates = []
+
+        for event in data.get("events") or []:
+            markets = event.get("markets") or []
+
+            # El event también puede servir como candidato.
+            if event.get("id"):
+                candidates.append({
+                    **event,
+                    "_source": "public_search_event",
+                })
+
+            for m in markets:
+                candidates.append({
+                    **m,
+                    "_eventTitle": event.get("title"),
+                    "_eventSlug": event.get("slug"),
+                    "_eventId": event.get("id"),
+                    "_source": "public_search_market",
+                })
+
+        return candidates
+
+    except Exception as e:
+        log.error(f"public-search error for '{q}': {e}")
+        return []
 
 
 def parse_json_field(value, default=None):
@@ -589,6 +692,28 @@ def normalize_whale(name):
 
     log.info(f"Whale raw: {name} -> None")
     return None
+
+
+# Team aliases for fuzzy matching
+TEAM_ALIASES = {
+    "knicks": ["knicks", "new york knicks"],
+    "hawks": ["hawks", "atlanta hawks"],
+    "cavaliers": ["cavaliers", "cleveland cavaliers", "cavs"],
+    "raptors": ["raptors", "toronto raptors"],
+    "nuggets": ["nuggets", "denver nuggets"],
+    "timberwolves": ["timberwolves", "minnesota timberwolves", "wolves"],
+    "yankees": ["yankees", "new york yankees"],
+    "red sox": ["red sox", "boston red sox"],
+    "rockies": ["rockies", "colorado rockies"],
+    "mets": ["mets", "new york mets"],
+    "brewers": ["brewers", "milwaukee brewers"],
+    "tigers": ["tigers", "detroit tigers"],
+}
+
+
+def expand_team_terms(team):
+    t = normalize_compact(team)
+    return TEAM_ALIASES.get(t, [t])
 
 # =========================
 # PARSER (FIX COMPLETO)
