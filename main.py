@@ -16,6 +16,37 @@ API_HASH = os.getenv('API_HASH')
 PHONE = os.getenv('PHONE')
 
 BACKEND_URL = os.getenv("BACKEND_URL")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
+ENABLE_TELEGRAM_LISTENER = os.getenv("ENABLE_TELEGRAM_LISTENER", "false").lower() == "true"
+ENABLE_RESULT_RESOLVER = os.getenv("ENABLE_RESULT_RESOLVER", "true").lower() == "true"
+AUDIT_MARKET_IDS_ON_START = os.getenv("AUDIT_MARKET_IDS_ON_START", "false").lower() == "true"
+
+BACKEND_HEADERS = {
+    "x-api-key": INTERNAL_API_KEY,
+}
+
+
+async def wait_for_backend(max_attempts=30):
+    if not BACKEND_URL:
+        raise RuntimeError("BACKEND_URL no configurado")
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient(timeout=5) as client_http:
+                res = await client_http.get(
+                    BACKEND_URL + "/api/alerts?limit=1",
+                    headers=BACKEND_HEADERS,
+                )
+
+                # Cualquier respuesta HTTP significa que ya conecta.
+                log.info(f"[BACKEND_READY] status={res.status_code}")
+                return True
+
+        except Exception as e:
+            log.warning(f"[BACKEND_WAIT] attempt={attempt}/{max_attempts} error={e}")
+            await asyncio.sleep(2)
+
+    raise RuntimeError("Backend no disponible después de esperar")
 
 
 def normalize(text: str) -> str:
@@ -733,40 +764,32 @@ def get_int_env(name):
         return None
 
 # =========================
-# CHANNEL CONFIG (9 whales)
+# CHANNEL CONFIG
 # =========================
 CHANNELS = {
-    "geo_macro": {
-        "chat_id": get_int_env("TG_GEO_MACRO"),
-        "invite_link": os.getenv("TG_GEO_MACRO_INVITE")
-    },
-    "sports_grinder": {
-        "chat_id": get_int_env("TG_SPORTS_GRINDER"),
-        "invite_link": os.getenv("TG_SPORTS_GRINDER_INVITE")
+    "sports_esports_titan": {
+        "chat_id": get_int_env("TG_SPORTS_ESPORTS_TITAN"),
+        "invite_link": os.getenv("TG_SPORTS_ESPORTS_TITAN_INVITE"),
     },
     "nba_volume": {
         "chat_id": get_int_env("TG_NBA_VOLUME"),
-        "invite_link": os.getenv("TG_NBA_VOLUME_INVITE")
+        "invite_link": os.getenv("TG_NBA_VOLUME_INVITE"),
     },
-    "nba_dualist": {
-        "chat_id": get_int_env("TG_NBA_DUALIST"),
-        "invite_link": os.getenv("TG_NBA_DUALIST_INVITE")
+    "macro_economics": {
+        "chat_id": get_int_env("TG_MACRO_ECONOMICS"),
+        "invite_link": os.getenv("TG_MACRO_ECONOMICS_INVITE"),
     },
     "global_trader": {
         "chat_id": get_int_env("TG_GLOBAL_TRADER"),
-        "invite_link": os.getenv("TG_GLOBAL_TRADER_INVITE")
+        "invite_link": os.getenv("TG_GLOBAL_TRADER_INVITE"),
+    },
+    "geo_macro": {
+        "chat_id": get_int_env("TG_GEO_MACRO"),
+        "invite_link": os.getenv("TG_GEO_MACRO_INVITE"),
     },
     "sports_arb": {
         "chat_id": get_int_env("TG_SPORTS_ARB"),
-        "invite_link": os.getenv("TG_SPORTS_ARB_INVITE")
-    },
-    "sports_focus": {
-        "chat_id": get_int_env("TG_SPORTS_FOCUS"),
-        "invite_link": os.getenv("TG_SPORTS_FOCUS_INVITE")
-    },
-    "sports_esports_titan": {
-    "chat_id": get_int_env("TG_SPORTS_ESPORTS_TITAN"),
-    "invite_link": os.getenv("TG_SPORTS_ESPORTS_TITAN_INVITE")
+        "invite_link": os.getenv("TG_SPORTS_ARB_INVITE"),
     },
 }
 
@@ -842,14 +865,13 @@ def clean_alert(text: str) -> str:
 # NORMALIZACION WHALES (FIX)
 # =========================
 WHALE_MAP = {
-    "geopolitical macro": "geo_macro",
-    "sports grinder": "sports_grinder",
-    "nba volume": "nba_volume",
-    "esports nba": "nba_dualist",
-    "everything trader": "global_trader",
-    "global sports": "sports_arb",
-    "sports focused": "sports_focus",
     "soccer esports titan": "sports_esports_titan",
+    "nba volume": "nba_volume",
+    "macro economics": "macro_economics",
+    "geopolitical macro": "geo_macro",
+    "everything trader": "global_trader",
+    "global sports arb": "sports_arb",
+    "global sports": "sports_arb",
 }
 
 
@@ -1013,6 +1035,62 @@ def extract_slug_from_polymarket_url(url):
     return None
 
 
+def extract_link_target_from_polymarket_url(url):
+    try:
+        parsed = urlparse(url)
+        parts = [p for p in parsed.path.split("/") if p]
+
+        if "event" in parts:
+            i = parts.index("event")
+            if i + 1 < len(parts):
+                return "event", parts[i + 1]
+
+        if "market" in parts:
+            i = parts.index("market")
+            if i + 1 < len(parts):
+                return "market", parts[i + 1]
+
+    except Exception:
+        return None, None
+
+    return None, None
+
+
+async def get_market_id_from_event_slug(event_slug, alert_title=None):
+    if not event_slug:
+        return None
+
+    url = f"https://gamma-api.polymarket.com/events/slug/{urllib.parse.quote(event_slug)}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client_http:
+            res = await client_http.get(url)
+
+            if res.status_code != 200:
+                return None
+
+            data = res.json()
+
+            if not isinstance(data, dict):
+                return None
+
+            markets = data.get("markets") or []
+            if not isinstance(markets, list) or not markets:
+                return None
+
+            title_for_match = alert_title or data.get("title") or event_slug
+            best = await pick_best_market(client_http, markets, title_for_match)
+
+            if best:
+                log.info(f"[EVENT SLUG MATCH] {event_slug} -> {best}")
+                return best
+
+    except Exception as e:
+        log.error(f"event slug search error: {e}")
+
+    return None
+
+
 def is_valid_alert(parsed):
     required = ["whale_id", "action", "market_title", "price_cents"]
 
@@ -1055,11 +1133,7 @@ async def send_to_backend(data):
             async with httpx.AsyncClient(timeout=10) as client_http:
                 await client_http.post(
                     BACKEND_URL + "/api/alerts",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                        "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
-                    },
+                    headers=BACKEND_HEADERS,
                     json=payload,
                 )
                 return
@@ -1078,11 +1152,7 @@ async def clear_bad_market_id(client_http, alert, reason: str):
 
     await client_http.post(
         BACKEND_URL + "/api/alerts/update",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
-        },
+        headers=BACKEND_HEADERS,
         json={
             "id": alert_id,
             "marketId": None,
@@ -1113,9 +1183,7 @@ async def audit_existing_market_ids(limit=1000):
         async with httpx.AsyncClient(timeout=15) as client_http:
             res = await client_http.get(
                 BACKEND_URL + f"/api/alerts?limit={limit}",
-                headers={
-                    "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
-                },
+                headers=BACKEND_HEADERS,
             )
 
             payload = res.json()
@@ -1327,9 +1395,7 @@ async def worker_loop():
                 # 1. traer alerts no resueltas
                 res = await client_http.get(
                     BACKEND_URL + "/api/alerts?unresolved=true",
-                    headers={
-                        "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
-                    },
+                    headers=BACKEND_HEADERS,
                 )
                 alerts = res.json().get("data", [])
                 market_cache = {}
@@ -1344,11 +1410,7 @@ async def worker_loop():
                             if resolved_market_id:
                                 await client_http.post(
                                     BACKEND_URL + "/api/alerts/update",
-                                    headers={
-                                        "Content-Type": "application/json",
-                                        "Accept": "application/json",
-                                        "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
-                                    },
+                                    headers=BACKEND_HEADERS,
                                     json={
                                         "id": alert["id"],
                                         "marketId": resolved_market_id
@@ -1373,11 +1435,7 @@ async def worker_loop():
                     # 2. actualizar backend
                     await client_http.post(
                         BACKEND_URL + "/api/alerts/update",
-                        headers={
-                            "Content-Type": "application/json",
-                            "Accept": "application/json",
-                            "X-Bot-Api-Key": os.getenv("BOT_API_KEY"),
-                        },
+                        headers=BACKEND_HEADERS,
                         json={
                             "id": alert["id"],
                             **result
@@ -1417,12 +1475,32 @@ async def handler(event):
     if dedup.is_duplicate(parsed):
         return
 
+    urls = extract_polymarket_urls(event.message)
+    polymarket_url = urls[0] if urls else None
+    event_slug = extract_slug_from_polymarket_url(polymarket_url) if polymarket_url else None
+
+    parsed["polymarket_url"] = polymarket_url
+    parsed["event_slug"] = event_slug
+    parsed["telegram_date"] = event.message.date.isoformat() if event.message.date else None
+
     market_id = None
 
     urls = extract_polymarket_urls(event.message)
     for url in urls:
-        slug = extract_slug_from_polymarket_url(url)
-        market_id = await get_market_id_by_slug(slug)
+        target_type, slug = extract_link_target_from_polymarket_url(url)
+
+        if target_type == "market":
+            market_id = await get_market_id_by_slug(slug)
+
+        elif target_type == "event":
+            market_id = await get_market_id_from_event_slug(
+                slug,
+                parsed.get("market_title"),
+            )
+
+        elif slug:
+            market_id = await get_market_id_by_slug(slug)
+
         if market_id:
             break
 
@@ -1448,15 +1526,30 @@ async def handler(event):
 # MAIN
 # =========================
 async def main():
-    await client.start(phone=PHONE)
-    log.info("Relay activo")
+    await wait_for_backend()
 
-    if os.getenv("AUDIT_MARKET_IDS_ON_START") == "true":
+    tasks = []
+
+    if AUDIT_MARKET_IDS_ON_START:
+        log.info("Market ID audit activo")
         await audit_existing_market_ids(limit=1000)
 
-    await asyncio.gather(
-        client.run_until_disconnected(),
-        worker_loop()
-    )
+    if ENABLE_TELEGRAM_LISTENER:
+        await client.start(phone=PHONE)
+        log.info("Telegram listener activo")
+        tasks.append(client.run_until_disconnected())
+    else:
+        log.info("Telegram listener desactivado")
+
+    if ENABLE_RESULT_RESOLVER:
+        log.info("Result resolver activo")
+        tasks.append(worker_loop())
+    else:
+        log.info("Result resolver desactivado")
+
+    if not tasks:
+        raise RuntimeError("No hay tareas activas")
+
+    await asyncio.gather(*tasks)
 
 asyncio.run(main())
